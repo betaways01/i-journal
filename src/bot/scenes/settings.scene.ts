@@ -1,7 +1,8 @@
 import { Context } from 'telegraf';
 import { sendMessage } from '../../ai';
 import { sessionStore } from '../../state/session.store';
-import { getProfile, saveProfile, Profile } from '../../profile';
+import { getProfile, saveProfile, normalizeProfile, Profile } from '../../profile';
+import { reloadScheduler } from '../../scheduler';
 import { ConversationState } from '../../types';
 
 const UPDATE_MARKER = '[PROFILE_UPDATED]';
@@ -38,20 +39,21 @@ Help them make changes. They might want to:
 
 Keep responses brief (1-2 sentences). Ask clarifying questions if needed.
 
-When done with changes, output ${UPDATE_MARKER} followed by the complete updated profile as a JSON code block:
+When done with changes, output ${UPDATE_MARKER} followed by the COMPLETE updated profile as a JSON code block. You MUST use these exact field names:
+- Sections: { "key": "...", "emoji": "...", "title": "..." }
+- Schedule days: { "tone": "...", "extraSections": [...], "context": "...", "closingStyle": "..." }
+- extraSections uses the same format as sections
 
-${UPDATE_MARKER}
+Current profile for reference (preserve fields the user didn't change):
 \`\`\`json
-{
-  "name": "${profile.name}",
-  "sections": [...],
-  "schedule": { "Monday": {...}, ... },
-  "morningTime": "${profile.morningTime}",
-  "eveningTime": "${profile.eveningTime}"
-}
+${JSON.stringify({ name: profile.name, sections: profile.sections, schedule: profile.schedule, morningTime: profile.morningTime, eveningTime: profile.eveningTime }, null, 2)}
 \`\`\`
 
-Preserve all existing fields the user didn't ask to change. Use the same JSON structure as the current profile.`;
+Output format when done:
+${UPDATE_MARKER}
+\`\`\`json
+{ ...complete updated profile... }
+\`\`\``;
 }
 
 function extractUpdatedProfile(response: string, current: Profile): Profile | null {
@@ -63,15 +65,12 @@ function extractUpdatedProfile(response: string, current: Profile): Profile | nu
 
   try {
     const parsed = JSON.parse(jsonMatch[1]);
+    const normalized = normalizeProfile(parsed);
 
     return {
-      name: parsed.name || current.name,
-      sections: parsed.sections || current.sections,
-      schedule: parsed.schedule || current.schedule,
-      morningTime: parsed.morningTime || current.morningTime,
-      eveningTime: parsed.eveningTime || current.eveningTime,
+      ...current,
+      ...normalized,
       onboardingComplete: true,
-      createdAt: current.createdAt,
       lastReviewDate: new Date().toISOString().split('T')[0],
     };
   } catch (err) {
@@ -134,6 +133,7 @@ export async function handleSettingsMessage(ctx: Context, userId: string, text: 
       }
 
       saveProfile(updated);
+      reloadScheduler();
 
       const sectionList = updated.sections.map((s) => `  ${s.emoji} ${s.title}`).join('\n');
       await ctx.reply(

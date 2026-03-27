@@ -1,7 +1,7 @@
 import { Context } from 'telegraf';
 import { sendMessage } from '../../ai';
 import { sessionStore } from '../../state/session.store';
-import { getDefaultProfile, saveProfile, Profile } from '../../profile';
+import { getDefaultProfile, saveProfile, normalizeProfile, Profile } from '../../profile';
 import { ConversationState } from '../../types';
 
 const PROFILE_MARKER = '[PROFILE_COMPLETE]';
@@ -37,12 +37,12 @@ ${PROFILE_MARKER}
 }
 \`\`\`
 
-Rules for the profile JSON:
-- Choose appropriate emojis for each section
-- Use lowercase_snake_case for keys
-- For days without special events use: { "tone": "Regular, balanced", "extraSections": [], "context": "Standard journal day.", "closingStyle": "A simple, encouraging closing line." }
-- extraSections on special days should have their own emoji and title
-- Tones should feel natural and match the day's energy`;
+CRITICAL — use these EXACT field names, no alternatives:
+- Sections MUST have: "key", "emoji", "title" (NOT "icon", "name", or "label")
+- Schedule days MUST have: "tone", "extraSections", "context", "closingStyle" (NOT "events" or "closingLine")
+- extraSections items use the same { "key", "emoji", "title" } format
+- Use lowercase_snake_case for key values
+- For days without special events: { "tone": "Regular, balanced", "extraSections": [], "context": "Standard journal day.", "closingStyle": "A simple, encouraging closing line." }`;
 }
 
 function extractProfile(response: string): Profile | null {
@@ -55,11 +55,11 @@ function extractProfile(response: string): Profile | null {
   try {
     const parsed = JSON.parse(jsonMatch[1]);
     const defaults = getDefaultProfile();
+    const normalized = normalizeProfile(parsed);
 
     return {
-      name: parsed.name || defaults.name,
-      sections: parsed.sections || defaults.sections,
-      schedule: parsed.schedule || defaults.schedule,
+      ...defaults,
+      ...normalized,
       morningTime: defaults.morningTime,
       eveningTime: defaults.eveningTime,
       onboardingComplete: true,

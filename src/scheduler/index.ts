@@ -1,4 +1,4 @@
-import cron from 'node-cron';
+import cron, { ScheduledTask } from 'node-cron';
 import { Telegraf } from 'telegraf';
 import { config } from '../config';
 import { getProfile, needsReview } from '../profile';
@@ -10,6 +10,10 @@ import {
 } from '../state/session.store';
 import { startMorningSession } from '../bot/scenes/morning.scene';
 import { startEveningSession } from '../bot/scenes/evening.scene';
+
+let morningTask: ScheduledTask | null = null;
+let eveningTask: ScheduledTask | null = null;
+let botRef: Telegraf | null = null;
 
 function createFakeContext(bot: Telegraf, chatId: string) {
   return {
@@ -25,14 +29,13 @@ function timeToCron(time: string): string {
   return `${parseInt(minute, 10)} ${parseInt(hour, 10)} * * *`;
 }
 
-export function startScheduler(bot: Telegraf): void {
+function schedulJobs(bot: Telegraf): void {
   const ownerId = config.telegram.ownerId;
   const profile = getProfile();
   const morningCron = timeToCron(profile.morningTime);
   const eveningCron = timeToCron(profile.eveningTime);
 
-  // Morning session
-  cron.schedule(
+  morningTask = cron.schedule(
     morningCron,
     async () => {
       console.log('[Scheduler] Morning session triggered');
@@ -61,8 +64,7 @@ export function startScheduler(bot: Telegraf): void {
     { timezone: config.timezone }
   );
 
-  // Evening session
-  cron.schedule(
+  eveningTask = cron.schedule(
     eveningCron,
     async () => {
       console.log('[Scheduler] Evening session triggered');
@@ -120,4 +122,26 @@ export function startScheduler(bot: Telegraf): void {
   console.log(
     `[Scheduler] Cron jobs registered (${profile.morningTime} + ${profile.eveningTime} ${config.timezone})`
   );
+}
+
+export function startScheduler(bot: Telegraf): void {
+  botRef = bot;
+  schedulJobs(bot);
+}
+
+export function reloadScheduler(): void {
+  if (!botRef) return;
+
+  // Stop existing cron tasks
+  if (morningTask) {
+    morningTask.stop();
+    morningTask = null;
+  }
+  if (eveningTask) {
+    eveningTask.stop();
+    eveningTask = null;
+  }
+
+  console.log('[Scheduler] Reloading with updated profile...');
+  schedulJobs(botRef);
 }

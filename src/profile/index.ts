@@ -91,13 +91,69 @@ const DEFAULT_PROFILE: Profile = {
 
 let cachedProfile: Profile | null = null;
 
+// Normalize a section object — Claude may use icon/name instead of emoji/title
+function normalizeSection(s: any): ProfileSection {
+  return {
+    key: s.key || s.title?.toLowerCase().replace(/\s+/g, '_') || s.name?.toLowerCase().replace(/\s+/g, '_') || 'unknown',
+    emoji: s.emoji || s.icon || '',
+    title: s.title || s.name || s.label || s.key || 'Untitled',
+  };
+}
+
+// Normalize a day schedule — Claude may use events/closingLine instead of extraSections/closingStyle
+function normalizeDaySchedule(d: any): DaySchedule {
+  let extraSections: ProfileSection[] = [];
+  if (Array.isArray(d.extraSections)) {
+    extraSections = d.extraSections.map((s: any) =>
+      typeof s === 'string' ? { key: s.toLowerCase().replace(/\s+/g, '_'), emoji: '', title: s } : normalizeSection(s)
+    );
+  } else if (Array.isArray(d.events)) {
+    extraSections = d.events.map((e: any) =>
+      typeof e === 'string' ? { key: e.toLowerCase().replace(/\s+/g, '_'), emoji: '', title: e } : normalizeSection(e)
+    );
+  }
+
+  return {
+    tone: d.tone || 'Regular, balanced',
+    extraSections,
+    context: d.context || d.specialContext || 'Standard journal day.',
+    closingStyle: d.closingStyle || d.closingLine || d.eveningClosingStyle || 'A simple, encouraging closing line.',
+  };
+}
+
+// Normalize an entire profile from any shape Claude might produce
+export function normalizeProfile(raw: any): Partial<Profile> {
+  const result: Partial<Profile> = {};
+
+  if (raw.name) result.name = raw.name;
+  if (raw.morningTime) result.morningTime = raw.morningTime;
+  if (raw.eveningTime) result.eveningTime = raw.eveningTime;
+
+  if (Array.isArray(raw.sections)) {
+    result.sections = raw.sections.map(normalizeSection);
+  }
+
+  if (raw.schedule && typeof raw.schedule === 'object') {
+    result.schedule = {};
+    for (const [day, sched] of Object.entries(raw.schedule)) {
+      result.schedule[day] = normalizeDaySchedule(sched);
+    }
+  }
+
+  return result;
+}
+
 export function getProfile(): Profile {
   if (cachedProfile) return cachedProfile;
 
   try {
     const data = fs.readFileSync(PROFILE_FILE, 'utf-8');
-    cachedProfile = JSON.parse(data);
-    return cachedProfile!;
+    const raw = JSON.parse(data);
+    const normalized = normalizeProfile(raw);
+    const defaults = structuredClone(DEFAULT_PROFILE);
+    const merged: Profile = { ...defaults, ...raw, ...normalized };
+    cachedProfile = merged;
+    return merged;
   } catch {
     return structuredClone(DEFAULT_PROFILE);
   }
