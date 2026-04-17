@@ -1,9 +1,12 @@
 import { Context } from 'telegraf';
 import { sendMessage } from '../../ai';
 import { sessionStore } from '../../state/session.store';
-import { getProfile, saveProfile, normalizeProfile, Profile } from '../../profile';
+import { normalizeProfile, Profile } from '../../profile/defaults';
+import { getProfileForUser, saveProfileForUser } from '../../db/profile.repo';
+import { getUserByTelegramId } from '../../db/users.repo';
 import { reloadScheduler } from '../../scheduler';
 import { ConversationState } from '../../types';
+import { loadBotUser } from '../userContext';
 
 const UPDATE_MARKER = '[PROFILE_UPDATED]';
 
@@ -46,7 +49,17 @@ When done with changes, output ${UPDATE_MARKER} followed by the COMPLETE updated
 
 Current profile for reference (preserve fields the user didn't change):
 \`\`\`json
-${JSON.stringify({ name: profile.name, sections: profile.sections, schedule: profile.schedule, morningTime: profile.morningTime, eveningTime: profile.eveningTime }, null, 2)}
+${JSON.stringify(
+  {
+    name: profile.name,
+    sections: profile.sections,
+    schedule: profile.schedule,
+    morningTime: profile.morningTime,
+    eveningTime: profile.eveningTime,
+  },
+  null,
+  2
+)}
 \`\`\`
 
 Output format when done:
@@ -80,7 +93,11 @@ function extractUpdatedProfile(response: string, current: Profile): Profile | nu
 }
 
 export async function startSettings(ctx: Context, userId: string): Promise<void> {
-  const profile = getProfile();
+  const botUser = loadBotUser(userId);
+  if (!botUser) {
+    await ctx.reply('Let\'s set up your journal first — use /start.');
+    return;
+  }
 
   const state: ConversationState = {
     userId,
@@ -96,7 +113,7 @@ export async function startSettings(ctx: Context, userId: string): Promise<void>
   sessionStore.set(userId, state);
 
   try {
-    const systemPrompt = buildSettingsPrompt(profile);
+    const systemPrompt = buildSettingsPrompt(botUser.profile);
     const greeting = await sendMessage(systemPrompt, [], 'I want to adjust my journal settings.');
     state.conversationHistory.push(
       { role: 'user', content: 'I want to adjust my journal settings.' },
@@ -111,11 +128,20 @@ export async function startSettings(ctx: Context, userId: string): Promise<void>
   }
 }
 
-export async function handleSettingsMessage(ctx: Context, userId: string, text: string): Promise<void> {
+export async function handleSettingsMessage(
+  ctx: Context,
+  userId: string,
+  text: string
+): Promise<void> {
   const state = sessionStore.get(userId);
   if (!state || state.sessionType !== 'settings') return;
 
-  const profile = getProfile();
+  const userRow = getUserByTelegramId(userId);
+  if (!userRow) return;
+
+  const profile = getProfileForUser(userRow.id);
+  if (!profile) return;
+
   const systemPrompt = buildSettingsPrompt(profile);
   state.conversationHistory.push({ role: 'user', content: text });
 
@@ -132,7 +158,7 @@ export async function handleSettingsMessage(ctx: Context, userId: string, text: 
         await ctx.reply(userMessage);
       }
 
-      saveProfile(updated);
+      saveProfileForUser(userRow.id, updated);
       reloadScheduler();
 
       const sectionList = updated.sections.map((s) => `  ${s.emoji} ${s.title}`).join('\n');

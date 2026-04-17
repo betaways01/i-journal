@@ -1,147 +1,152 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { Telegraf } from 'telegraf';
 import { config } from '../config';
-import { getProfile, needsReview } from '../profile';
+import { listOnboardedUsers } from '../db/users.repo';
+import { getProfileForUser, needsReviewForUser } from '../db/profile.repo';
 import {
   sessionStore,
   getJournalState,
-  getTodayDateString,
-  getYesterdayDateString,
+  getTodayDateStringInZone,
+  getYesterdayDateStringInZone,
 } from '../state/session.store';
-import { startMorningSession } from '../bot/scenes/morning.scene';
-import { startEveningSession } from '../bot/scenes/evening.scene';
+import { clearStaleSessions } from '../db/sessions.repo';
+import { sendMorningPrompt, sendEveningPrompt } from '../bot/handlers/callback.handler';
 
-let morningTask: ScheduledTask | null = null;
-let eveningTask: ScheduledTask | null = null;
+const STALE_SESSION_HOURS = 3;
+
 let botRef: Telegraf | null = null;
-
-function createFakeContext(bot: Telegraf, chatId: string) {
-  return {
-    from: { id: Number(chatId) },
-    reply: async (text: string, extra?: object) => {
-      await bot.telegram.sendMessage(chatId, text, extra);
-    },
-  } as any;
-}
+const activeTasks: ScheduledTask[] = [];
 
 function timeToCron(time: string): string {
   const [hour, minute] = time.split(':');
   return `${parseInt(minute, 10)} ${parseInt(hour, 10)} * * *`;
 }
 
-function schedulJobs(bot: Telegraf): void {
-  const ownerId = config.telegram.ownerId;
-  const profile = getProfile();
-  const morningCron = timeToCron(profile.morningTime);
-  const eveningCron = timeToCron(profile.eveningTime);
+async function triggerMorningForUser(bot: Telegraf, telegramId: string): Promise<void> {
+  console.log(`[Scheduler] Morning trigger for ${telegramId}`);
 
-  morningTask = cron.schedule(
-    morningCron,
-    async () => {
-      console.log('[Scheduler] Morning session triggered');
-      const today = getTodayDateString();
-      const state = getJournalState();
+  clearStaleSessions(STALE_SESSION_HOURS, config.timezone);
 
-      if (state.lastMorningDate === today) {
-        console.log('[Scheduler] Morning session already completed today');
-        return;
-      }
+  const users = listOnboardedUsers();
+  const userRow = users.find((u) => u.telegram_id === telegramId);
+  if (!userRow) return;
 
-      if (sessionStore.has(ownerId)) {
-        console.log('[Scheduler] Session already active, skipping morning trigger');
-        return;
-      }
+  const profile = getProfileForUser(userRow.id);
+  if (!profile) return;
 
-      const currentProfile = getProfile();
-      if (!currentProfile.onboardingComplete) {
-        console.log('[Scheduler] Onboarding not complete, skipping morning trigger');
-        return;
-      }
+  const state = getJournalState(telegramId);
+  const today = getTodayDateStringInZone(profile.timezone);
+  if (state.lastMorningDate === today) {
+    console.log(`[Scheduler] Morning already done for ${telegramId}`);
+    return;
+  }
 
-      const ctx = createFakeContext(bot, ownerId);
-      await startMorningSession(ctx, ownerId);
-    },
-    { timezone: config.timezone }
-  );
+  if (sessionStore.has(telegramId)) {
+    console.log(`[Scheduler] Session active for ${telegramId} — skipping morning trigger`);
+    return;
+  }
 
-  eveningTask = cron.schedule(
-    eveningCron,
-    async () => {
-      console.log('[Scheduler] Evening session triggered');
-      const today = getTodayDateString();
-      const yesterday = getYesterdayDateString();
-      const state = getJournalState();
+  await sendMorningPrompt(bot, telegramId, profile.name);
+}
 
-      if (state.lastEveningDate === today) {
-        console.log('[Scheduler] Evening session already completed today');
-        return;
-      }
+async function triggerEveningForUser(bot: Telegraf, telegramId: string): Promise<void> {
+  console.log(`[Scheduler] Evening trigger for ${telegramId}`);
 
-      if (sessionStore.has(ownerId)) {
-        console.log('[Scheduler] Session already active, skipping evening trigger');
-        return;
-      }
+  clearStaleSessions(STALE_SESSION_HOURS, config.timezone);
 
-      const currentProfile = getProfile();
-      if (!currentProfile.onboardingComplete) {
-        console.log('[Scheduler] Onboarding not complete, skipping evening trigger');
-        return;
-      }
+  const users = listOnboardedUsers();
+  const userRow = users.find((u) => u.telegram_id === telegramId);
+  if (!userRow) return;
 
-      // Check if yesterday was missed
-      if (state.lastEveningDate !== yesterday && state.lastEveningDate !== null) {
-        const yesterdayDate = new Date();
-        yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-        const dayName = yesterdayDate.toLocaleDateString('en-US', {
-          weekday: 'long',
-          timeZone: config.timezone,
-        });
+  const profile = getProfileForUser(userRow.id);
+  if (!profile) return;
 
-        await bot.telegram.sendMessage(
-          ownerId,
-          `Hey ${currentProfile.name}, we didn't journal yesterday (${dayName}). Want to do a quick catch-up before today's?\n\nReply *yes* to catch up, or *no* to skip to today.`,
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
+  const today = getTodayDateStringInZone(profile.timezone);
+  const yesterday = getYesterdayDateStringInZone(profile.timezone);
+  const state = getJournalState(telegramId);
 
-      // Seasonal review nudge
-      if (needsReview()) {
-        await bot.telegram.sendMessage(
-          ownerId,
-          `💡 You've been journaling for a while, ${currentProfile.name}! Your sections or schedule might need a refresh. Type /settings anytime to adjust.`
-        );
-      }
+  if (state.lastEveningDate === today) {
+    console.log(`[Scheduler] Evening already done for ${telegramId}`);
+    return;
+  }
 
-      const ctx = createFakeContext(bot, ownerId);
-      await startEveningSession(ctx, ownerId);
-    },
-    { timezone: config.timezone }
-  );
+  if (sessionStore.has(telegramId)) {
+    console.log(`[Scheduler] Session active for ${telegramId} — skipping evening trigger`);
+    return;
+  }
 
-  console.log(
-    `[Scheduler] Cron jobs registered (${profile.morningTime} + ${profile.eveningTime} ${config.timezone})`
-  );
+  // Missed-yesterday nudge — button menu, no auto-start
+  if (state.lastEveningDate !== yesterday && state.lastEveningDate !== null) {
+    const yesterdayDate = new Date();
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const dayName = yesterdayDate.toLocaleDateString('en-US', {
+      weekday: 'long',
+      timeZone: profile.timezone,
+    });
+
+    await sendEveningPrompt(bot, telegramId, {
+      name: profile.name,
+      missedYesterday: true,
+      missedDayName: dayName,
+    });
+    return;
+  }
+
+  if (needsReviewForUser(userRow.id)) {
+    await bot.telegram.sendMessage(
+      telegramId,
+      `💡 You've been journaling for a while, ${profile.name}! Your sections or schedule might need a refresh. Type /settings anytime.`
+    );
+  }
+
+  await sendEveningPrompt(bot, telegramId, { name: profile.name, missedYesterday: false });
+}
+
+function scheduleJobs(bot: Telegraf): void {
+  // Stop existing tasks
+  while (activeTasks.length > 0) {
+    const t = activeTasks.pop();
+    t?.stop();
+  }
+
+  const users = listOnboardedUsers();
+  if (users.length === 0) {
+    console.log('[Scheduler] No onboarded users yet — nothing scheduled');
+    return;
+  }
+
+  for (const user of users) {
+    const profile = getProfileForUser(user.id);
+    if (!profile) continue;
+
+    const morningCron = timeToCron(profile.morningTime);
+    const eveningCron = timeToCron(profile.eveningTime);
+
+    const morningTask = cron.schedule(
+      morningCron,
+      () => triggerMorningForUser(bot, user.telegram_id).catch((e) => console.error('[Scheduler] morning error:', e)),
+      { timezone: profile.timezone }
+    );
+    const eveningTask = cron.schedule(
+      eveningCron,
+      () => triggerEveningForUser(bot, user.telegram_id).catch((e) => console.error('[Scheduler] evening error:', e)),
+      { timezone: profile.timezone }
+    );
+
+    activeTasks.push(morningTask, eveningTask);
+    console.log(
+      `[Scheduler] ${profile.name} (${user.telegram_id}): ${profile.morningTime} + ${profile.eveningTime} ${profile.timezone}`
+    );
+  }
 }
 
 export function startScheduler(bot: Telegraf): void {
   botRef = bot;
-  schedulJobs(bot);
+  scheduleJobs(bot);
 }
 
 export function reloadScheduler(): void {
   if (!botRef) return;
-
-  // Stop existing cron tasks
-  if (morningTask) {
-    morningTask.stop();
-    morningTask = null;
-  }
-  if (eveningTask) {
-    eveningTask.stop();
-    eveningTask = null;
-  }
-
-  console.log('[Scheduler] Reloading with updated profile...');
-  schedulJobs(botRef);
+  console.log('[Scheduler] Reloading...');
+  scheduleJobs(botRef);
 }

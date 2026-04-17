@@ -1,8 +1,11 @@
 import { Context } from 'telegraf';
 import { sendMessage } from '../../ai';
 import { sessionStore } from '../../state/session.store';
-import { getDefaultProfile, saveProfile, normalizeProfile, Profile } from '../../profile';
+import { getDefaultProfile, normalizeProfile, Profile } from '../../profile/defaults';
+import { saveProfileForUser } from '../../db/profile.repo';
 import { ConversationState } from '../../types';
+import { getUserByTelegramId } from '../../db/users.repo';
+import { config } from '../../config';
 
 const PROFILE_MARKER = '[PROFILE_COMPLETE]';
 
@@ -60,6 +63,7 @@ function extractProfile(response: string): Profile | null {
     return {
       ...defaults,
       ...normalized,
+      timezone: config.timezone,
       morningTime: defaults.morningTime,
       eveningTime: defaults.eveningTime,
       onboardingComplete: true,
@@ -102,7 +106,11 @@ export async function startOnboarding(ctx: Context, userId: string): Promise<voi
   }
 }
 
-export async function handleOnboardingMessage(ctx: Context, userId: string, text: string): Promise<void> {
+export async function handleOnboardingMessage(
+  ctx: Context,
+  userId: string,
+  text: string
+): Promise<void> {
   const state = sessionStore.get(userId);
   if (!state || state.sessionType !== 'onboarding') return;
 
@@ -117,13 +125,19 @@ export async function handleOnboardingMessage(ctx: Context, userId: string, text
     const profile = extractProfile(response);
 
     if (profile) {
-      // Strip the JSON block from the user-facing message
       const userMessage = response.substring(0, response.indexOf(PROFILE_MARKER)).trim();
       if (userMessage) {
         await ctx.reply(userMessage);
       }
 
-      saveProfile(profile);
+      const userRow = getUserByTelegramId(userId);
+      if (!userRow) {
+        await ctx.reply('Something went wrong saving your profile. Try /start again.');
+        sessionStore.clear(userId);
+        return;
+      }
+
+      saveProfileForUser(userRow.id, profile);
 
       const sectionList = profile.sections.map((s) => `  ${s.emoji} ${s.title}`).join('\n');
       await ctx.reply(
@@ -147,11 +161,16 @@ export async function handleOnboardingMessage(ctx: Context, userId: string, text
 }
 
 export function skipOnboarding(userId: string): void {
+  const userRow = getUserByTelegramId(userId);
+  if (!userRow) return;
+
   const defaults = getDefaultProfile();
+  defaults.timezone = config.timezone;
+  if (userRow.first_name) defaults.name = userRow.first_name;
   defaults.onboardingComplete = true;
   defaults.createdAt = new Date().toISOString().split('T')[0];
   defaults.lastReviewDate = new Date().toISOString().split('T')[0];
-  saveProfile(defaults);
+  saveProfileForUser(userRow.id, defaults);
   sessionStore.clear(userId);
   console.log('[Onboarding] Skipped, default profile saved for', userId);
 }

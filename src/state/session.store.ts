@@ -1,52 +1,78 @@
-import fs from 'fs';
-import path from 'path';
 import { ConversationState } from '../types';
+import { getUserByTelegramId, upsertUser } from '../db/users.repo';
+import {
+  getSessionForUser,
+  setSessionForUser,
+  clearSessionForUser,
+  hasSessionForUser,
+} from '../db/sessions.repo';
+import {
+  getJournalStateForUser,
+  updateJournalStateForUser,
+  JournalState,
+} from '../db/journalState.repo';
+import { config } from '../config';
 
-const sessions = new Map<string, ConversationState>();
+function resolveUserId(telegramId: string): number {
+  const user = getUserByTelegramId(telegramId);
+  if (user) return user.id;
+  const created = upsertUser({ telegramId });
+  return created.id;
+}
 
 export const sessionStore = {
-  get: (userId: string) => sessions.get(userId),
-  set: (userId: string, state: ConversationState) => sessions.set(userId, state),
-  clear: (userId: string) => sessions.delete(userId),
-  has: (userId: string) => sessions.has(userId),
+  get: (telegramId: string): ConversationState | undefined => {
+    const user = getUserByTelegramId(telegramId);
+    if (!user) return undefined;
+    return getSessionForUser(user.id) ?? undefined;
+  },
+  set: (telegramId: string, state: ConversationState): void => {
+    const uid = resolveUserId(telegramId);
+    const targetDate = state.startedAt.toLocaleDateString('en-CA', { timeZone: config.timezone });
+    setSessionForUser(uid, state, targetDate);
+  },
+  clear: (telegramId: string): void => {
+    const user = getUserByTelegramId(telegramId);
+    if (!user) return;
+    clearSessionForUser(user.id);
+  },
+  has: (telegramId: string): boolean => {
+    const user = getUserByTelegramId(telegramId);
+    if (!user) return false;
+    return hasSessionForUser(user.id);
+  },
 };
 
-interface JournalState {
-  lastMorningDate: string | null;
-  lastEveningDate: string | null;
+export function getJournalState(telegramId: string): JournalState {
+  const user = getUserByTelegramId(telegramId);
+  if (!user) return { lastMorningDate: null, lastEveningDate: null };
+  return getJournalStateForUser(user.id);
 }
 
-const STATE_FILE = path.join(__dirname, '../../state/journal.state.json');
-
-function ensureStateDir(): void {
-  const dir = path.dirname(STATE_FILE);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-export function getJournalState(): JournalState {
-  try {
-    const data = fs.readFileSync(STATE_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return { lastMorningDate: null, lastEveningDate: null };
-  }
-}
-
-export function updateJournalState(updates: Partial<JournalState>): void {
-  ensureStateDir();
-  const current = getJournalState();
-  const updated = { ...current, ...updates };
-  fs.writeFileSync(STATE_FILE, JSON.stringify(updated, null, 2));
+export function updateJournalState(
+  telegramId: string,
+  updates: Partial<JournalState>
+): void {
+  const uid = resolveUserId(telegramId);
+  updateJournalStateForUser(uid, updates);
 }
 
 export function getTodayDateString(): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Nairobi' });
+  return new Date().toLocaleDateString('en-CA', { timeZone: config.timezone });
 }
 
 export function getYesterdayDateString(): string {
   const now = new Date();
   now.setDate(now.getDate() - 1);
-  return now.toLocaleDateString('en-CA', { timeZone: 'Africa/Nairobi' });
+  return now.toLocaleDateString('en-CA', { timeZone: config.timezone });
+}
+
+export function getTodayDateStringInZone(timezone: string): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: timezone });
+}
+
+export function getYesterdayDateStringInZone(timezone: string): string {
+  const now = new Date();
+  now.setDate(now.getDate() - 1);
+  return now.toLocaleDateString('en-CA', { timeZone: timezone });
 }

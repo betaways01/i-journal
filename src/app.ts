@@ -1,27 +1,30 @@
 import { createBot } from './bot';
 import { startScheduler } from './scheduler';
+import { getDb, closeDb } from './db';
+import { migrateLegacyJsonIfPresent } from './db/legacy.migrate';
 
 async function main(): Promise<void> {
   console.log('[i-Journal] Starting up...');
 
+  // Initialize DB + run migrations before anything else touches it
+  getDb();
+  migrateLegacyJsonIfPresent();
+
   const bot = createBot();
 
-  // Start the scheduler
   startScheduler(bot);
 
-  // Launch the bot
   await bot.launch();
   console.log('[i-Journal] Bot is running! Listening for messages...');
 
-  // Graceful shutdown
-  process.once('SIGINT', () => {
-    console.log('[i-Journal] Shutting down (SIGINT)...');
-    bot.stop('SIGINT');
-  });
-  process.once('SIGTERM', () => {
-    console.log('[i-Journal] Shutting down (SIGTERM)...');
-    bot.stop('SIGTERM');
-  });
+  const shutdown = (signal: string) => {
+    console.log(`[i-Journal] Shutting down (${signal})...`);
+    bot.stop(signal);
+    closeDb();
+  };
+
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 main().catch((error) => {

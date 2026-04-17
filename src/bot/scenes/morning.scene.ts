@@ -2,15 +2,24 @@ import { Context } from 'telegraf';
 import { sendMessage } from '../../ai';
 import { buildMorningPrompt } from '../../ai/prompts/morning';
 import { formatDateForJournal } from '../../ai/prompts/dayConfig';
-import { sessionStore, updateJournalState, getTodayDateString } from '../../state/session.store';
+import { sessionStore, updateJournalState } from '../../state/session.store';
 import { writeMorningToOneNote } from '../../onenote/writer';
 import { ConversationState } from '../../types';
+import { loadBotUser } from '../userContext';
+import { saveJournalEntry, markEntrySavedToCloud } from '../../db/entries.repo';
+import { hasOwnerOneNoteConfigured } from '../../config';
 
 const MORNING_MARKER = '## ☀️ Morning';
 
 export async function startMorningSession(ctx: Context, userId: string): Promise<void> {
+  const botUser = loadBotUser(userId);
+  if (!botUser) {
+    await ctx.reply('Let\'s set up your journal first — use /start.');
+    return;
+  }
+
   const now = new Date();
-  const systemPrompt = buildMorningPrompt(now);
+  const systemPrompt = buildMorningPrompt(botUser.profile, now);
 
   const state: ConversationState = {
     userId,
@@ -40,11 +49,18 @@ export async function startMorningSession(ctx: Context, userId: string): Promise
   }
 }
 
-export async function handleMorningMessage(ctx: Context, userId: string, text: string): Promise<void> {
+export async function handleMorningMessage(
+  ctx: Context,
+  userId: string,
+  text: string
+): Promise<void> {
   const state = sessionStore.get(userId);
   if (!state || state.sessionType !== 'morning') return;
 
-  const systemPrompt = buildMorningPrompt(state.startedAt);
+  const botUser = loadBotUser(userId);
+  if (!botUser) return;
+
+  const systemPrompt = buildMorningPrompt(botUser.profile, state.startedAt);
 
   state.conversationHistory.push({ role: 'user', content: text });
 
@@ -56,7 +72,6 @@ export async function handleMorningMessage(ctx: Context, userId: string, text: s
     const markerIndex = response.indexOf(MORNING_MARKER);
 
     if (markerIndex !== -1) {
-      // Session complete — split into user message and compiled entry
       const userMessage = response.substring(0, markerIndex).trim();
       const compiledEntry = response.substring(markerIndex).trim();
 
@@ -64,19 +79,33 @@ export async function handleMorningMessage(ctx: Context, userId: string, text: s
         await ctx.reply(userMessage);
       }
 
-      // Save to OneNote
-      const { dateStr, dayStr } = formatDateForJournal(state.startedAt);
-      try {
-        await writeMorningToOneNote(dateStr, dayStr, compiledEntry);
-        await ctx.reply('☀️ Morning saved to OneNote ✓');
-      } catch (oneNoteError) {
-        console.error('[Morning] OneNote save failed:', oneNoteError);
-        await ctx.reply('⚠️ Morning compiled but couldn\'t save to OneNote.');
+      const { dateStr, dayStr } = formatDateForJournal(state.startedAt, botUser.profile.timezone);
+
+      // Local save first
+      const entryId = saveJournalEntry({
+        userId: botUser.row.id,
+        entryDate: dateStr,
+        dayOfWeek: dayStr,
+        sessionType: 'morning',
+        contentMarkdown: compiledEntry,
+      });
+
+      if (botUser.isOwner && hasOwnerOneNoteConfigured()) {
+        try {
+          const webUrl = await writeMorningToOneNote(dateStr, dayStr, compiledEntry);
+          markEntrySavedToCloud(entryId, webUrl);
+          await ctx.reply('☀️ Saved ✓');
+        } catch (oneNoteError) {
+          console.error('[Morning] OneNote save failed:', oneNoteError);
+          await ctx.reply('☀️ Saved locally ✓ (cloud sync failed)');
+        }
+      } else {
+        await ctx.reply('☀️ Saved ✓');
       }
 
       state.completed = true;
       sessionStore.clear(userId);
-      updateJournalState({ lastMorningDate: getTodayDateString() });
+      updateJournalState(userId, { lastMorningDate: dateStr });
       console.log('[Morning] Session completed for', userId);
     } else {
       await ctx.reply(response);

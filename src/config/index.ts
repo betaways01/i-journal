@@ -1,5 +1,4 @@
 import dotenv from 'dotenv';
-import { UserContext } from '../types';
 
 dotenv.config();
 
@@ -11,10 +10,14 @@ function requireEnv(key: string): string {
   return value;
 }
 
+function optionalEnv(key: string, fallback = ''): string {
+  return process.env[key] ?? fallback;
+}
+
 export const config = {
   telegram: {
     botToken: requireEnv('TELEGRAM_BOT_TOKEN'),
-    ownerId: requireEnv('TELEGRAM_OWNER_ID'),
+    ownerId: optionalEnv('TELEGRAM_OWNER_ID'),
   },
   anthropic: {
     apiKey: requireEnv('ANTHROPIC_API_KEY'),
@@ -22,26 +25,18 @@ export const config = {
     maxTokens: 1024,
   },
   microsoft: {
-    clientId: requireEnv('MICROSOFT_CLIENT_ID'),
-    clientSecret: requireEnv('MICROSOFT_CLIENT_SECRET'),
-    tenantId: requireEnv('MICROSOFT_TENANT_ID'),
-    redirectUri: process.env.MICROSOFT_REDIRECT_URI || 'http://localhost:3000/auth/callback',
-    accessToken: process.env.MICROSOFT_ACCESS_TOKEN || '',
-    refreshToken: process.env.MICROSOFT_REFRESH_TOKEN || '',
+    clientId: optionalEnv('MICROSOFT_CLIENT_ID'),
+    clientSecret: optionalEnv('MICROSOFT_CLIENT_SECRET'),
+    tenantId: optionalEnv('MICROSOFT_TENANT_ID', 'consumers'),
+    redirectUri: optionalEnv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback'),
+    accessToken: optionalEnv('MICROSOFT_ACCESS_TOKEN'),
+    refreshToken: optionalEnv('MICROSOFT_REFRESH_TOKEN'),
   },
-  timezone: process.env.TIMEZONE || 'Africa/Nairobi',
-  nodeEnv: process.env.NODE_ENV || 'development',
+  timezone: optionalEnv('TIMEZONE', 'Africa/Nairobi'),
+  nodeEnv: optionalEnv('NODE_ENV', 'development'),
+  dbPath: optionalEnv('DB_PATH'),
 };
 
-export function getFrancisContext(): UserContext {
-  return {
-    telegramId: config.telegram.ownerId,
-    name: 'Francis',
-    timezone: config.timezone,
-    microsoftAccessToken: config.microsoft.accessToken,
-    preferences: {
-      morningTime: '06:00',
-      eveningTime: '21:00',
-    },
-  };
+export function hasOwnerOneNoteConfigured(): boolean {
+  return Boolean(config.microsoft.accessToken || config.microsoft.refreshToken);
 }
