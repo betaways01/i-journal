@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "main": "dist/app.js",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "nodemon --ignore state/ --exec ts-node src/app.ts",
     "build": "rimraf dist && tsc",
