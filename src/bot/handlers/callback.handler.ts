@@ -3,6 +3,10 @@ import { sessionStore } from '../../state/session.store';
 import { startMorningSession } from '../scenes/morning.scene';
 import { startEveningSession } from '../scenes/evening.scene';
 import { registerUserFromContext } from '../userContext';
+import {
+  disconnectStoredOneNoteForUser,
+  testOneNoteConnectionForUser,
+} from '../../onenote/writer';
 
 const REMIND_LATER_MINUTES = 30;
 
@@ -62,6 +66,42 @@ export function registerCallbacks(bot: Telegraf): void {
       case 'skip_today': {
         sessionStore.clear(telegramId);
         await ctx.reply('Skipped. Rest well — tomorrow is a new day. 🌙');
+        return;
+      }
+      case 'storage_disconnect': {
+        const result = disconnectStoredOneNoteForUser(userRow);
+        if (result.disconnected) {
+          if (result.nowUsingLegacyFallback) {
+            await ctx.reply(
+              'Stored OneNote tokens removed. This account is still using the legacy server-level OneNote connection.'
+            );
+            return;
+          }
+
+          await ctx.reply('OneNote disconnected. Your entries will keep saving locally.');
+          return;
+        }
+
+        if (result.nowUsingLegacyFallback) {
+          await ctx.reply(
+            'This connection comes from the server env, so there is nothing stored to disconnect here yet.'
+          );
+          return;
+        }
+
+        await ctx.reply('No stored OneNote connection found for this account.');
+        return;
+      }
+      case 'storage_test': {
+        try {
+          const profile = await testOneNoteConnectionForUser(userRow);
+          await ctx.reply(
+            `OneNote looks good.\n\nConnected as ${profile.displayName}${profile.email ? `\n${profile.email}` : ''}`
+          );
+        } catch (error) {
+          console.error('[Callback] storage_test failed:', error);
+          await ctx.reply('I could not reach OneNote right now. Try reconnecting from /storage.');
+        }
         return;
       }
     }

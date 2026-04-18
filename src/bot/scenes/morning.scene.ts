@@ -3,11 +3,13 @@ import { sendMessage } from '../../ai';
 import { buildMorningPrompt } from '../../ai/prompts/morning';
 import { formatDateForJournal } from '../../ai/prompts/dayConfig';
 import { sessionStore, updateJournalState } from '../../state/session.store';
-import { writeMorningToOneNote } from '../../onenote/writer';
 import { ConversationState } from '../../types';
 import { loadBotUser } from '../userContext';
 import { saveJournalEntry, markEntrySavedToCloud } from '../../db/entries.repo';
-import { hasOwnerOneNoteConfigured } from '../../config';
+import {
+  getOneNoteStatusForUser,
+  writeMorningToOneNoteForUser,
+} from '../../onenote/writer';
 
 const MORNING_MARKER = '## ☀️ Morning';
 
@@ -90,9 +92,14 @@ export async function handleMorningMessage(
         contentMarkdown: compiledEntry,
       });
 
-      if (botUser.isOwner && hasOwnerOneNoteConfigured()) {
+      if (getOneNoteStatusForUser(botUser.row).connected) {
         try {
-          const webUrl = await writeMorningToOneNote(dateStr, dayStr, compiledEntry);
+          const webUrl = await writeMorningToOneNoteForUser(
+            botUser.row,
+            dateStr,
+            dayStr,
+            compiledEntry
+          );
           markEntrySavedToCloud(entryId, webUrl);
           await ctx.reply('☀️ Saved ✓');
         } catch (oneNoteError) {

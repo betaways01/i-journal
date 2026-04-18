@@ -1,8 +1,24 @@
-import { getValidToken, refreshAccessToken } from './auth';
+import {
+  getStoredMicrosoftConnectionSummary,
+  getValidLegacyOwnerAccessToken,
+  getValidMicrosoftAccessTokenForUser,
+  refreshLegacyOwnerAccessToken,
+  refreshMicrosoftAccessTokenForUser,
+} from './auth';
+import { hasLegacyOwnerOneNoteConfigured } from '../config';
+import { deleteStorageConnectionForUser } from '../db/storageConnections.repo';
+import { UserRow } from '../db/users.repo';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const NOTEBOOK_NAME = 'i-Journal';
 const SECTION_NAME = 'Daily Entries';
+
+export interface OneNoteStatus {
+  connected: boolean;
+  source: 'user_oauth' | 'legacy_owner_env' | 'none';
+  profileName?: string;
+  email?: string | null;
+}
 
 function markdownToXhtml(markdown: string): string {
   let html = markdown
@@ -33,11 +49,48 @@ function markdownToXhtml(markdown: string): string {
   return wrapped.filter(Boolean).join('\n');
 }
 
-async function graphRequest(
+async function getAuthModeForUser(user: UserRow): Promise<{
+  source: 'user_oauth' | 'legacy_owner_env';
+  getAccessToken: () => Promise<string>;
+  refreshAccessToken: () => Promise<string>;
+} | null> {
+  const stored = getStoredMicrosoftConnectionSummary(user.id);
+  if (stored?.connected) {
+    return {
+      source: 'user_oauth',
+      getAccessToken: () => getValidMicrosoftAccessTokenForUser(user.id),
+      refreshAccessToken: async () => {
+        const refreshed = await refreshMicrosoftAccessTokenForUser(user.id);
+        if (!refreshed.access_token) {
+          throw new Error('No refreshed OneNote access token available for this user.');
+        }
+        return refreshed.access_token;
+      },
+    };
+  }
+
+  if (user.is_owner === 1 && hasLegacyOwnerOneNoteConfigured()) {
+    return {
+      source: 'legacy_owner_env',
+      getAccessToken: () => getValidLegacyOwnerAccessToken(),
+      refreshAccessToken: () => refreshLegacyOwnerAccessToken(),
+    };
+  }
+
+  return null;
+}
+
+async function graphRequestForUser(
+  user: UserRow,
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  let token = await getValidToken();
+  const authMode = await getAuthModeForUser(user);
+  if (!authMode) {
+    throw new Error('No OneNote connection found for this user.');
+  }
+
+  let token = await authMode.getAccessToken();
 
   let response = await fetch(url, {
     ...options,
@@ -48,8 +101,8 @@ async function graphRequest(
   });
 
   if (response.status === 401) {
-    console.log('[OneNote] Token expired, refreshing...');
-    token = await refreshAccessToken();
+    console.log(`[OneNote] Token expired for user ${user.telegram_id}, refreshing...`);
+    token = await authMode.refreshAccessToken();
     response = await fetch(url, {
       ...options,
       headers: {
@@ -62,8 +115,8 @@ async function graphRequest(
   return response;
 }
 
-async function findOrCreateNotebook(): Promise<string> {
-  const res = await graphRequest(`${GRAPH_BASE}/me/onenote/notebooks`);
+async function findOrCreateNotebook(user: UserRow): Promise<string> {
+  const res = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/notebooks`);
   if (!res.ok) throw new Error(`Failed to list notebooks: ${await res.text()}`);
 
   const data = (await res.json()) as { value: { displayName: string; id: string }[] };
@@ -71,7 +124,7 @@ async function findOrCreateNotebook(): Promise<string> {
 
   if (notebook) return notebook.id;
 
-  const createRes = await graphRequest(`${GRAPH_BASE}/me/onenote/notebooks`, {
+  const createRes = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/notebooks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ displayName: NOTEBOOK_NAME }),
@@ -80,12 +133,13 @@ async function findOrCreateNotebook(): Promise<string> {
   if (!createRes.ok) throw new Error(`Failed to create notebook: ${await createRes.text()}`);
 
   const created = (await createRes.json()) as { id: string };
-  console.log(`[OneNote] Created notebook: ${NOTEBOOK_NAME}`);
+  console.log(`[OneNote] Created notebook for user ${user.telegram_id}: ${NOTEBOOK_NAME}`);
   return created.id;
 }
 
-async function findOrCreateSection(notebookId: string): Promise<string> {
-  const res = await graphRequest(
+async function findOrCreateSection(user: UserRow, notebookId: string): Promise<string> {
+  const res = await graphRequestForUser(
+    user,
     `${GRAPH_BASE}/me/onenote/notebooks/${notebookId}/sections`
   );
   if (!res.ok) throw new Error(`Failed to list sections: ${await res.text()}`);
@@ -95,7 +149,8 @@ async function findOrCreateSection(notebookId: string): Promise<string> {
 
   if (section) return section.id;
 
-  const createRes = await graphRequest(
+  const createRes = await graphRequestForUser(
+    user,
     `${GRAPH_BASE}/me/onenote/notebooks/${notebookId}/sections`,
     {
       method: 'POST',
@@ -107,28 +162,30 @@ async function findOrCreateSection(notebookId: string): Promise<string> {
   if (!createRes.ok) throw new Error(`Failed to create section: ${await createRes.text()}`);
 
   const created = (await createRes.json()) as { id: string };
-  console.log(`[OneNote] Created section: ${SECTION_NAME}`);
+  console.log(`[OneNote] Created section for user ${user.telegram_id}: ${SECTION_NAME}`);
   return created.id;
 }
 
 async function findPageByTitle(
+  user: UserRow,
   sectionId: string,
   title: string
 ): Promise<string | null> {
   const encoded = encodeURIComponent(title).replace(/'/g, '%27');
-  const res = await graphRequest(
+  const res = await graphRequestForUser(
+    user,
     `${GRAPH_BASE}/me/onenote/sections/${sectionId}/pages?$filter=title eq '${encoded}'&$select=id,title`
   );
 
   if (!res.ok) {
-    // Fallback: list all pages and find by title
-    const listRes = await graphRequest(
+    const listRes = await graphRequestForUser(
+      user,
       `${GRAPH_BASE}/me/onenote/sections/${sectionId}/pages?$select=id,title&$top=10&$orderby=createdDateTime desc`
     );
     if (!listRes.ok) return null;
 
     const listData = (await listRes.json()) as { value: { id: string; title: string }[] };
-    const page = listData.value.find((p) => p.title === title);
+    const page = listData.value.find((entry) => entry.title === title);
     return page ? page.id : null;
   }
 
@@ -136,42 +193,33 @@ async function findPageByTitle(
   return data.value.length > 0 ? data.value[0].id : null;
 }
 
-async function appendToPage(pageId: string, htmlContent: string): Promise<void> {
-  const res = await graphRequest(
-    `${GRAPH_BASE}/me/onenote/pages/${pageId}/content`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify([
-        {
-          target: 'body',
-          action: 'append',
-          content: htmlContent,
-        },
-      ]),
-    }
-  );
+async function appendToPage(user: UserRow, pageId: string, htmlContent: string): Promise<void> {
+  const res = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/pages/${pageId}/content`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify([
+      {
+        target: 'body',
+        action: 'append',
+        content: htmlContent,
+      },
+    ]),
+  });
 
   if (!res.ok) {
     throw new Error(`Failed to append to OneNote page: ${await res.text()}`);
   }
 }
 
-async function getSectionId(): Promise<string> {
-  const notebookId = await findOrCreateNotebook();
-  return findOrCreateSection(notebookId);
+async function getSectionId(user: UserRow): Promise<string> {
+  const notebookId = await findOrCreateNotebook(user);
+  return findOrCreateSection(user, notebookId);
 }
 
-export async function writeMorningToOneNote(
-  dateStr: string,
-  dayStr: string,
-  markdownContent: string
-): Promise<string | null> {
-  const sectionId = await getSectionId();
-  const title = `${dateStr} \u2014 ${dayStr}`;
+function buildPageXhtml(title: string, markdownContent: string): string {
   const bodyHtml = markdownToXhtml(markdownContent);
 
-  const xhtml = `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html>
 <head>
   <title>${title}</title>
@@ -180,15 +228,93 @@ export async function writeMorningToOneNote(
   ${bodyHtml}
 </body>
 </html>`;
+}
 
-  const res = await graphRequest(
-    `${GRAPH_BASE}/me/onenote/sections/${sectionId}/pages`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/xhtml+xml' },
-      body: xhtml,
-    }
+export function getOneNoteStatusForUser(user: UserRow): OneNoteStatus {
+  const stored = getStoredMicrosoftConnectionSummary(user.id);
+  if (stored?.connected) {
+    return {
+      connected: true,
+      source: 'user_oauth',
+      profileName: stored.profileName,
+      email: stored.email,
+    };
+  }
+
+  if (user.is_owner === 1 && hasLegacyOwnerOneNoteConfigured()) {
+    return {
+      connected: true,
+      source: 'legacy_owner_env',
+      profileName: 'legacy server connection',
+      email: null,
+    };
+  }
+
+  return {
+    connected: false,
+    source: 'none',
+  };
+}
+
+export function disconnectStoredOneNoteForUser(user: UserRow): {
+  disconnected: boolean;
+  nowUsingLegacyFallback: boolean;
+} {
+  const stored = getStoredMicrosoftConnectionSummary(user.id);
+  if (stored?.connected) {
+    deleteStorageConnectionForUser(user.id, 'onenote');
+    return {
+      disconnected: true,
+      nowUsingLegacyFallback: user.is_owner === 1 && hasLegacyOwnerOneNoteConfigured(),
+    };
+  }
+
+  return {
+    disconnected: false,
+    nowUsingLegacyFallback: user.is_owner === 1 && hasLegacyOwnerOneNoteConfigured(),
+  };
+}
+
+export async function testOneNoteConnectionForUser(user: UserRow): Promise<{
+  displayName: string;
+  email: string | null;
+}> {
+  const res = await graphRequestForUser(
+    user,
+    `${GRAPH_BASE}/me?$select=displayName,mail,userPrincipalName`
   );
+
+  if (!res.ok) {
+    throw new Error(`Failed to verify OneNote connection: ${await res.text()}`);
+  }
+
+  const data = (await res.json()) as {
+    displayName?: string;
+    mail?: string | null;
+    userPrincipalName?: string | null;
+  };
+
+  return {
+    displayName: data.displayName || 'OneNote user',
+    email: data.mail || data.userPrincipalName || null,
+  };
+}
+
+export async function writeMorningToOneNoteForUser(
+  user: UserRow,
+  dateStr: string,
+  dayStr: string,
+  markdownContent: string
+): Promise<string | null> {
+  const sectionId = await getSectionId(user);
+  const title = `${dateStr} \u2014 ${dayStr}`;
+  const xhtml = buildPageXhtml(title, markdownContent);
+
+  const res = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/sections/${sectionId}/pages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/xhtml+xml' },
+    body: xhtml,
+  });
 
   if (!res.ok) {
     throw new Error(`Failed to create OneNote page: ${await res.text()}`);
@@ -197,48 +323,33 @@ export async function writeMorningToOneNote(
   const pageData = (await res.json()) as { links?: { oneNoteWebUrl?: { href?: string } } };
   const webUrl = pageData.links?.oneNoteWebUrl?.href || null;
 
-  console.log(`[OneNote] Morning entry saved: ${title}`);
+  console.log(`[OneNote] Morning entry saved for user ${user.telegram_id}: ${title}`);
   return webUrl;
 }
 
-export async function writeEveningToOneNote(
+export async function writeEveningToOneNoteForUser(
+  user: UserRow,
   dateStr: string,
   dayStr: string,
   markdownContent: string
 ): Promise<string | null> {
-  const sectionId = await getSectionId();
+  const sectionId = await getSectionId(user);
   const title = `${dateStr} \u2014 ${dayStr}`;
-
-  // Try to find existing page (created by morning session)
-  const existingPageId = await findPageByTitle(sectionId, title);
+  const existingPageId = await findPageByTitle(user, sectionId, title);
 
   if (existingPageId) {
     const bodyHtml = markdownToXhtml(markdownContent);
-    await appendToPage(existingPageId, `<hr/>\n${bodyHtml}`);
-    console.log(`[OneNote] Evening entry appended to existing page: ${title}`);
+    await appendToPage(user, existingPageId, `<hr/>\n${bodyHtml}`);
+    console.log(`[OneNote] Evening entry appended for user ${user.telegram_id}: ${title}`);
     return null;
   }
 
-  // No morning page — create full page
-  const bodyHtml = markdownToXhtml(markdownContent);
-  const xhtml = `<!DOCTYPE html>
-<html>
-<head>
-  <title>${title}</title>
-</head>
-<body>
-  ${bodyHtml}
-</body>
-</html>`;
-
-  const res = await graphRequest(
-    `${GRAPH_BASE}/me/onenote/sections/${sectionId}/pages`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/xhtml+xml' },
-      body: xhtml,
-    }
-  );
+  const xhtml = buildPageXhtml(title, markdownContent);
+  const res = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/sections/${sectionId}/pages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/xhtml+xml' },
+    body: xhtml,
+  });
 
   if (!res.ok) {
     throw new Error(`Failed to create OneNote page: ${await res.text()}`);
@@ -247,6 +358,6 @@ export async function writeEveningToOneNote(
   const pageData = (await res.json()) as { links?: { oneNoteWebUrl?: { href?: string } } };
   const webUrl = pageData.links?.oneNoteWebUrl?.href || null;
 
-  console.log(`[OneNote] Evening entry saved (new page): ${title}`);
+  console.log(`[OneNote] Evening entry saved for user ${user.telegram_id}: ${title}`);
   return webUrl;
 }

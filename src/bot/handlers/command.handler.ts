@@ -1,4 +1,5 @@
 import { Context, Telegraf } from 'telegraf';
+import { InlineKeyboardButton } from 'telegraf/types';
 import { listOnboardedUsers, UserRow } from '../../db/users.repo';
 import { getProfileForUser, needsReviewForUser } from '../../db/profile.repo';
 import {
@@ -13,7 +14,9 @@ import { startEveningSession } from '../scenes/evening.scene';
 import { startOnboarding, skipOnboarding } from '../scenes/onboarding.scene';
 import { startSettings } from '../scenes/settings.scene';
 import { registerUserFromContext, loadBotUser } from '../userContext';
-import { hasOwnerOneNoteConfigured } from '../../config';
+import { hasMicrosoftOAuthConfigured } from '../../config';
+import { buildMicrosoftAuthUrlForUser } from '../../onenote/auth';
+import { getOneNoteStatusForUser } from '../../onenote/writer';
 
 async function ensureOnboardedOrGuide(
   ctx: Context,
@@ -212,7 +215,7 @@ export function registerCommands(bot: Telegraf): void {
       : entry.content_markdown;
     const cloudNote = entry.onenote_url
       ? `\n\n[Open in OneNote](${entry.onenote_url})`
-      : entry.saved_to_cloud === 0 && userRow.is_owner === 1
+      : entry.saved_to_cloud === 0 && getOneNoteStatusForUser(userRow).connected
         ? '\n\n_(not yet synced to OneNote)_'
         : '';
     await ctx.reply(header + body + cloudNote, { parse_mode: 'Markdown' });
@@ -222,19 +225,61 @@ export function registerCommands(bot: Telegraf): void {
     const userRow = registerUserFromContext(ctx);
     if (!userRow) return;
 
-    const ownerOneNote = userRow.is_owner === 1 && hasOwnerOneNoteConfigured();
+    const oneNote = getOneNoteStatusForUser(userRow);
+    const oauthReady = hasMicrosoftOAuthConfigured();
     const lines = [
       '💾 *Storage*',
       '',
       `• Local database: ✅ active (your entries are always saved here first)`,
-      `• OneNote sync: ${ownerOneNote ? '✅ connected (owner account)' : '—  not connected'}`,
+      `• OneNote sync: ${
+        oneNote.connected
+          ? oneNote.source === 'legacy_owner_env'
+            ? '✅ connected (legacy server account)'
+            : '✅ connected'
+          : oauthReady
+            ? '—  not connected'
+            : '—  unavailable on this server'
+      }`,
     ];
 
-    if (!ownerOneNote) {
-      lines.push('', '_Per-user cloud sync is coming soon. For now, your entries are safely stored locally._');
+    if (oneNote.connected && oneNote.profileName && oneNote.source === 'user_oauth') {
+      lines.push('', `Connected as: ${oneNote.profileName}`);
     }
 
-    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    if (!oneNote.connected) {
+      lines.push('', '_Your entries are still safe locally even without cloud sync._');
+    }
+
+    if (!oauthReady) {
+      lines.push('', '_Microsoft OAuth is not configured on this server yet._');
+    }
+
+    const buttons: InlineKeyboardButton[][] = [];
+
+    if (oauthReady) {
+      buttons.push([
+        {
+          text:
+            oneNote.connected && oneNote.source === 'user_oauth'
+              ? 'Reconnect OneNote'
+              : 'Connect OneNote',
+          url: buildMicrosoftAuthUrlForUser(userRow.id),
+        },
+      ]);
+    }
+
+    if (oneNote.connected) {
+      buttons.push([{ text: 'Test connection', callback_data: 'storage_test' }]);
+    }
+
+    if (oneNote.source === 'user_oauth') {
+      buttons.push([{ text: 'Disconnect OneNote', callback_data: 'storage_disconnect' }]);
+    }
+
+    await ctx.reply(lines.join('\n'), {
+      parse_mode: 'Markdown',
+      reply_markup: buttons.length > 0 ? { inline_keyboard: buttons } : undefined,
+    });
   });
 
   bot.command('health', async (ctx) => {
@@ -249,7 +294,7 @@ export function registerCommands(bot: Telegraf): void {
       '',
       `• Active users: ${users.length}`,
       `• Your profile: ${me ? '✅' : '—'}`,
-      `• OneNote (owner): ${hasOwnerOneNoteConfigured() ? '✅' : '—'}`,
+      `• OneNote: ${getOneNoteStatusForUser(userRow).connected ? '✅' : '—'}`,
       `• DB: ✅`,
     ];
 

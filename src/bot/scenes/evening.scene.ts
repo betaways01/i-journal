@@ -3,11 +3,13 @@ import { sendMessage } from '../../ai';
 import { buildEveningPrompt } from '../../ai/prompts/evening';
 import { formatDateForJournal } from '../../ai/prompts/dayConfig';
 import { sessionStore, updateJournalState } from '../../state/session.store';
-import { writeEveningToOneNote } from '../../onenote/writer';
 import { ConversationState } from '../../types';
 import { loadBotUser } from '../userContext';
 import { saveJournalEntry, markEntrySavedToCloud } from '../../db/entries.repo';
-import { hasOwnerOneNoteConfigured } from '../../config';
+import {
+  getOneNoteStatusForUser,
+  writeEveningToOneNoteForUser,
+} from '../../onenote/writer';
 
 const EVENING_MARKER = '## 🌙 Evening';
 
@@ -95,10 +97,15 @@ export async function handleEveningMessage(
       await ctx.reply(response);
 
       // Cloud save is best-effort (only if the owner has OneNote configured)
-      if (botUser.isOwner && hasOwnerOneNoteConfigured()) {
+      if (getOneNoteStatusForUser(botUser.row).connected) {
         try {
           console.log('[Evening] Saving to OneNote...');
-          const pageUrl = await writeEveningToOneNote(dateStr, dayStr, response);
+          const pageUrl = await writeEveningToOneNoteForUser(
+            botUser.row,
+            dateStr,
+            dayStr,
+            response
+          );
           markEntrySavedToCloud(entryId, pageUrl);
           const msg = pageUrl
             ? `🌙 Saved ✓\n[Open in OneNote](${pageUrl})`
