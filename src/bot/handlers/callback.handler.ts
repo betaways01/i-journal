@@ -121,6 +121,17 @@ export function registerCallbacks(bot: Telegraf): void {
         await startCompanionSession(ctx as unknown as Context, telegramId, { mode: 'drop' });
         return;
       }
+      case 'drop_continue': {
+        if (sessionStore.has(telegramId)) {
+          await ctx.reply('You already have an active session.');
+          return;
+        }
+        await startCompanionSession(ctx as unknown as Context, telegramId, {
+          mode: 'drop',
+          continuation: true,
+        });
+        return;
+      }
       case 'vent_now': {
         if (sessionStore.has(telegramId)) {
           await ctx.reply('You already have an active session.');

@@ -18,7 +18,7 @@ export const QUICK_ACTIONS: InlineKeyboardButton[][] = [
 export const POST_SAVE_ACTIONS: InlineKeyboardButton[][] = [
   [
     { text: '📄 View entry', callback_data: 'last_entry' },
-    { text: '📝 Drop more', callback_data: 'drop_now' },
+    { text: '📝 Keep going', callback_data: 'drop_continue' },
   ],
 ];
 

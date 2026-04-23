@@ -37,6 +37,7 @@ interface StartOptions {
   mode: CompanionMode;
   targetDate?: Date;
   initialUserMessage?: string;
+  continuation?: boolean;
 }
 
 function sessionTypeFor(mode: CompanionMode): SessionType {
@@ -389,6 +390,25 @@ export async function startCompanionSession(
     startedAt: now,
     completed: false,
   };
+
+  if (opts.continuation && botUser) {
+    // Seed history so the AI treats the next user message as a continuation — no greeting,
+    // no Claude call here. Just a light ready-signal in the chat and wait for their text.
+    const ack = "I'm here.";
+    state.conversationHistory.push(
+      {
+        role: 'user',
+        content: '[system note] User just finished a journal entry and tapped "Keep going". Continue the thread naturally — do NOT greet, do NOT open a new topic. Respond to whatever they say next as if mid-conversation.',
+      },
+      {
+        role: 'assistant',
+        content: ack,
+      }
+    );
+    sessionStore.set(telegramId, state);
+    await ctx.reply(ack);
+    return;
+  }
 
   sessionStore.set(telegramId, state);
 
