@@ -1,5 +1,6 @@
 import { createBot } from './bot';
 import { startScheduler } from './scheduler';
+import { startReminderSweeper, stopReminderSweeper } from './scheduler/reminders';
 import { getDb, closeDb } from './db';
 import { migrateLegacyJsonIfPresent } from './db/legacy.migrate';
 import { closeWebServer, startWebServer } from './web';
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
     if (started) return;
     started = true;
     startScheduler(bot);
+    startReminderSweeper(bot);
     console.log('[i-Journal] Bot is running! Listening for messages...');
   };
 
@@ -36,6 +38,7 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     console.log(`[i-Journal] Shutting down (${signal})...`);
     bot.stop(signal);
+    stopReminderSweeper();
     closeWebServer();
     closeDb();
   };

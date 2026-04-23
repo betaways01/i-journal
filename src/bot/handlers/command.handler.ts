@@ -13,10 +13,12 @@ import { startMorningSession } from '../scenes/morning.scene';
 import { startEveningSession } from '../scenes/evening.scene';
 import { startOnboarding, skipOnboarding } from '../scenes/onboarding.scene';
 import { startSettings } from '../scenes/settings.scene';
+import { startCompanionSession } from '../scenes/companion.scene';
 import { registerUserFromContext, loadBotUser } from '../userContext';
 import { hasMicrosoftOAuthConfigured } from '../../config';
 import { buildMicrosoftAuthUrlForUser } from '../../onenote/auth';
 import { getOneNoteStatusForUser } from '../../onenote/writer';
+import { QUICK_ACTIONS, STATUS_ACTIONS, POST_SAVE_ACTIONS } from '../keyboards';
 
 async function ensureOnboardedOrGuide(
   ctx: Context,
@@ -27,9 +29,8 @@ async function ensureOnboardedOrGuide(
 
   await ctx.reply(
     actionName === 'start'
-      ? '🌅 *Welcome to i-Journal!*\n\nLet me set up your personal journal. I\'ll ask a few quick questions to customize it for you.\n\n_Use /skip anytime to use defaults instead._'
-      : 'Let\'s set up your journal first — use /start.',
-    { parse_mode: 'Markdown' }
+      ? "Hey. I'm your journal companion.\n\nWe'll just talk — no forms. You can use /skip anytime if you'd rather start with defaults."
+      : "Let's get acquainted first — use /start."
   );
   if (actionName === 'start') {
     await startOnboarding(ctx, String(userRow.telegram_id));
@@ -46,8 +47,7 @@ export function registerCommands(bot: Telegraf): void {
 
     if (userRow.onboarding_complete === 0) {
       await ctx.reply(
-        '🌅 *Welcome to i-Journal!*\n\nI\'ll set up your personal journal with a few quick questions.\n\n_Use /skip anytime to use defaults._',
-        { parse_mode: 'Markdown' }
+        "Hey. I'm your journal companion.\n\nWe'll just talk — no forms. /skip anytime if you'd rather go with defaults."
       );
       await startOnboarding(ctx, telegramId);
       return;
@@ -60,18 +60,13 @@ export function registerCommands(bot: Telegraf): void {
     }
 
     await ctx.reply(
-      `🌅 *Welcome back, ${profile.name}!*\n\n` +
-        `☀️ /morning — Start your morning check-in\n` +
-        `📖 /journal — Start your evening journal\n` +
-        `📝 /catchup — Journal yesterday's entry\n` +
-        `⚙️ /settings — Adjust sections or schedule\n` +
-        `⏭️ /skip — Skip current session\n` +
-        `📊 /status — Check today's session status\n` +
-        `📄 /last — Show your last journal entry\n` +
-        `💾 /storage — Cloud save options\n` +
-        `❤️ /health — Bot status\n\n` +
-        `I'll reach out at *${profile.morningTime}* and *${profile.eveningTime}* each day.`,
-      { parse_mode: 'Markdown' }
+      `Hey, ${profile.name}. Good to see you.\n\n` +
+        `Just message me anytime — I'll pick it up.\n\n` +
+        `I'll also check in around *${profile.morningTime}* and *${profile.eveningTime}*.`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: QUICK_ACTIONS },
+      }
     );
   });
 
@@ -106,6 +101,32 @@ export function registerCommands(bot: Telegraf): void {
     }
 
     await startEveningSession(ctx, telegramId);
+  });
+
+  bot.command('drop', async (ctx) => {
+    const userRow = registerUserFromContext(ctx);
+    if (!userRow) return;
+    if (!(await ensureOnboardedOrGuide(ctx, userRow, 'drop'))) return;
+
+    const telegramId = userRow.telegram_id;
+    if (sessionStore.has(telegramId)) {
+      await ctx.reply('You already have an active session. Finish it first, or /skip to start fresh.');
+      return;
+    }
+    await startCompanionSession(ctx, telegramId, { mode: 'drop' });
+  });
+
+  bot.command('vent', async (ctx) => {
+    const userRow = registerUserFromContext(ctx);
+    if (!userRow) return;
+    if (!(await ensureOnboardedOrGuide(ctx, userRow, 'vent'))) return;
+
+    const telegramId = userRow.telegram_id;
+    if (sessionStore.has(telegramId)) {
+      await ctx.reply('You already have an active session. Finish it first, or /skip to start fresh.');
+      return;
+    }
+    await startCompanionSession(ctx, telegramId, { mode: 'vent' });
   });
 
   bot.command('catchup', async (ctx) => {
@@ -196,7 +217,10 @@ export function registerCommands(bot: Telegraf): void {
 
     status += `\n\n📋 Sections: ${botUser.profile.sections.map((s) => s.emoji).join(' ')}`;
 
-    await ctx.reply(status, { parse_mode: 'Markdown' });
+    await ctx.reply(status, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: STATUS_ACTIONS({ morningDone, eveningDone }) },
+    });
   });
 
   bot.command('last', async (ctx) => {
@@ -218,7 +242,10 @@ export function registerCommands(bot: Telegraf): void {
       : entry.saved_to_cloud === 0 && getOneNoteStatusForUser(userRow).connected
         ? '\n\n_(not yet synced to OneNote)_'
         : '';
-    await ctx.reply(header + body + cloudNote, { parse_mode: 'Markdown' });
+    await ctx.reply(header + body + cloudNote, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '📝 Drop', callback_data: 'drop_now' }, { text: '📖 Journal', callback_data: 'journal_now' }]] },
+    });
   });
 
   bot.command('storage', async (ctx) => {

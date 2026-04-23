@@ -25,7 +25,7 @@ export interface JournalSection {
   content: string;
 }
 
-export type SessionType = 'morning' | 'evening' | 'onboarding' | 'settings';
+export type SessionType = 'morning' | 'evening' | 'onboarding' | 'settings' | 'drop' | 'vent';
 
 export interface ConversationState {
   userId: string;

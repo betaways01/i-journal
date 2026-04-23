@@ -142,4 +142,21 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 2,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE pending_reminders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          fire_at TEXT NOT NULL,
+          payload_json TEXT,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_pending_reminders_fire_at ON pending_reminders(fire_at);
+      `);
+    },
+  },
 ];

@@ -2,11 +2,20 @@ import { Context, Telegraf } from 'telegraf';
 import { sessionStore } from '../../state/session.store';
 import { startMorningSession } from '../scenes/morning.scene';
 import { startEveningSession } from '../scenes/evening.scene';
+import { startCompanionSession } from '../scenes/companion.scene';
+import { startSettings } from '../scenes/settings.scene';
 import { registerUserFromContext } from '../userContext';
 import {
   disconnectStoredOneNoteForUser,
   testOneNoteConnectionForUser,
 } from '../../onenote/writer';
+import { scheduleReminder } from '../../db/reminders.repo';
+import { getUserByTelegramId } from '../../db/users.repo';
+import { getLastEntry } from '../../db/entries.repo';
+import { getOneNoteStatusForUser } from '../../onenote/writer';
+import { getJournalState, getTodayDateStringInZone } from '../../state/session.store';
+import { loadBotUser } from '../userContext';
+import { STATUS_ACTIONS } from '../keyboards';
 
 const REMIND_LATER_MINUTES = 30;
 
@@ -55,12 +64,16 @@ export function registerCallbacks(bot: Telegraf): void {
         return;
       }
       case 'remind_later': {
+        const userForReminder = getUserByTelegramId(telegramId);
+        if (!userForReminder) return;
+
+        const fireAt = new Date(Date.now() + REMIND_LATER_MINUTES * 60 * 1000);
+        scheduleReminder({
+          userId: userForReminder.id,
+          kind: 'evening_remind_later',
+          fireAt,
+        });
         await ctx.reply(`No problem — I'll check in again in ${REMIND_LATER_MINUTES} minutes.`);
-        setTimeout(() => {
-          sendEveningPrompt(bot, telegramId, { missedYesterday: false }).catch((e) =>
-            console.error('[Callback] remind_later resend failed:', e)
-          );
-        }, REMIND_LATER_MINUTES * 60 * 1000);
         return;
       }
       case 'skip_today': {
@@ -90,6 +103,75 @@ export function registerCallbacks(bot: Telegraf): void {
         }
 
         await ctx.reply('No stored OneNote connection found for this account.');
+        return;
+      }
+      case 'journal_now': {
+        if (sessionStore.has(telegramId)) {
+          await ctx.reply('You already have an active session.');
+          return;
+        }
+        await startEveningSession(ctx as unknown as Context, telegramId);
+        return;
+      }
+      case 'drop_now': {
+        if (sessionStore.has(telegramId)) {
+          await ctx.reply('You already have an active session.');
+          return;
+        }
+        await startCompanionSession(ctx as unknown as Context, telegramId, { mode: 'drop' });
+        return;
+      }
+      case 'vent_now': {
+        if (sessionStore.has(telegramId)) {
+          await ctx.reply('You already have an active session.');
+          return;
+        }
+        await startCompanionSession(ctx as unknown as Context, telegramId, { mode: 'vent' });
+        return;
+      }
+      case 'last_entry': {
+        const entry = getLastEntry(userRow.id);
+        if (!entry) {
+          await ctx.reply('No entries yet — /journal or /drop to make your first.');
+          return;
+        }
+        const header = `📄 *${entry.entry_date} (${entry.day_of_week})*\n\n`;
+        const body = entry.content_markdown.length > 3500
+          ? entry.content_markdown.slice(0, 3500) + '\n\n…(truncated)'
+          : entry.content_markdown;
+        const cloudNote = entry.onenote_url
+          ? `\n\n[Open in OneNote](${entry.onenote_url})`
+          : entry.saved_to_cloud === 0 && getOneNoteStatusForUser(userRow).connected
+            ? '\n\n_(not yet synced to OneNote)_'
+            : '';
+        await ctx.reply(header + body + cloudNote, { parse_mode: 'Markdown' });
+        return;
+      }
+      case 'status_now': {
+        const botUser = loadBotUser(telegramId);
+        if (!botUser) return;
+        const state = getJournalState(telegramId);
+        const today = getTodayDateStringInZone(botUser.profile.timezone);
+        const morningDone = state.lastMorningDate === today;
+        const eveningDone = state.lastEveningDate === today;
+        const lines = [
+          `📊 *Today — ${today}*`,
+          '',
+          `☀️ Morning: ${morningDone ? '✅ Done' : '⏳ Pending'}`,
+          `🌙 Evening: ${eveningDone ? '✅ Done' : '⏳ Pending'}`,
+        ];
+        await ctx.reply(lines.join('\n'), {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: STATUS_ACTIONS({ morningDone, eveningDone }) },
+        });
+        return;
+      }
+      case 'open_settings': {
+        if (sessionStore.has(telegramId)) {
+          await ctx.reply('Finish your active session first, or /skip it.');
+          return;
+        }
+        await startSettings(ctx as unknown as Context, telegramId);
         return;
       }
       case 'storage_test': {

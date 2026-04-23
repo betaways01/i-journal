@@ -1,12 +1,11 @@
 import { Context } from 'telegraf';
 import { sessionStore } from '../../state/session.store';
-import { handleMorningMessage } from '../scenes/morning.scene';
-import { handleEveningMessage } from '../scenes/evening.scene';
-import { handleOnboardingMessage } from '../scenes/onboarding.scene';
+import { handleCompanionMessage, startCompanionSession } from '../scenes/companion.scene';
 import { handleSettingsMessage } from '../scenes/settings.scene';
 import { registerUserFromContext } from '../userContext';
+import { getProfileForUser } from '../../db/profile.repo';
 
-export function handleMessage(ctx: Context): void {
+export async function handleMessage(ctx: Context): Promise<void> {
   const userRow = registerUserFromContext(ctx);
   if (!userRow) return;
 
@@ -18,25 +17,24 @@ export function handleMessage(ctx: Context): void {
 
   const telegramId = userRow.telegram_id;
   const session = sessionStore.get(telegramId);
-  if (!session) {
-    ctx.reply(
-      'No active session right now. Use /morning or /journal to start one, or wait for the scheduled prompt. 🙂'
-    );
+
+  if (session) {
+    if (session.sessionType === 'settings') {
+      await handleSettingsMessage(ctx, telegramId, text);
+      return;
+    }
+    await handleCompanionMessage(ctx, telegramId, text);
     return;
   }
 
-  switch (session.sessionType) {
-    case 'morning':
-      handleMorningMessage(ctx, telegramId, text);
-      break;
-    case 'evening':
-      handleEveningMessage(ctx, telegramId, text);
-      break;
-    case 'onboarding':
-      handleOnboardingMessage(ctx, telegramId, text);
-      break;
-    case 'settings':
-      handleSettingsMessage(ctx, telegramId, text);
-      break;
+  const isOnboarded = userRow.onboarding_complete === 1 && Boolean(getProfileForUser(userRow.id));
+
+  if (!isOnboarded) {
+    // Treat their very first message as the start of onboarding — no form, just conversation.
+    await startCompanionSession(ctx, telegramId, { mode: 'onboarding', initialUserMessage: text });
+    return;
   }
+
+  // Onboarded user typed out of the blue — open a drop entry with their message as input.
+  await startCompanionSession(ctx, telegramId, { mode: 'drop', initialUserMessage: text });
 }
