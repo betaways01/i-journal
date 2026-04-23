@@ -63,14 +63,18 @@ export function registerCallbacks(bot: Telegraf): void {
         await startEveningSession(ctx as unknown as Context, telegramId, yesterdayDate);
         return;
       }
-      case 'remind_later': {
+      case 'remind_later':
+      case 'remind_later_evening':
+      case 'remind_later_morning': {
         const userForReminder = getUserByTelegramId(telegramId);
         if (!userForReminder) return;
 
+        const kind =
+          data === 'remind_later_morning' ? 'morning_remind_later' : 'evening_remind_later';
         const fireAt = new Date(Date.now() + REMIND_LATER_MINUTES * 60 * 1000);
         scheduleReminder({
           userId: userForReminder.id,
-          kind: 'evening_remind_later',
+          kind,
           fireAt,
         });
         await ctx.reply(`No problem — I'll check in again in ${REMIND_LATER_MINUTES} minutes.`);
@@ -207,7 +211,7 @@ export async function sendMorningPrompt(bot: Telegraf, telegramId: string, name:
       inline_keyboard: [
         [
           { text: '☀️ Start', callback_data: 'start_morning' },
-          { text: '⏰ Remind later', callback_data: 'remind_later' },
+          { text: '⏰ Remind later', callback_data: 'remind_later_morning' },
         ],
         [{ text: '⏭️ Skip today', callback_data: 'skip_today' }],
       ],
@@ -231,14 +235,14 @@ export async function sendEveningPrompt(
           { text: '📝 Catch up yesterday', callback_data: 'catchup_yesterday' },
         ],
         [
-          { text: '⏰ Remind later', callback_data: 'remind_later' },
+          { text: '⏰ Remind later', callback_data: 'remind_later_evening' },
           { text: '⏭️ Skip today', callback_data: 'skip_today' },
         ],
       ]
     : [
         [
           { text: '📖 Start journal', callback_data: 'start_evening' },
-          { text: '⏰ Remind later', callback_data: 'remind_later' },
+          { text: '⏰ Remind later', callback_data: 'remind_later_evening' },
         ],
         [{ text: '⏭️ Skip today', callback_data: 'skip_today' }],
       ];

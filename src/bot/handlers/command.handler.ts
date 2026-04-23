@@ -313,17 +313,20 @@ export function registerCommands(bot: Telegraf): void {
     const userRow = registerUserFromContext(ctx);
     if (!userRow) return;
 
-    const users = listOnboardedUsers();
     const me = loadBotUser(userRow.telegram_id);
 
     const lines = [
       '❤️ *i-Journal health*',
       '',
-      `• Active users: ${users.length}`,
       `• Your profile: ${me ? '✅' : '—'}`,
       `• OneNote: ${getOneNoteStatusForUser(userRow).connected ? '✅' : '—'}`,
       `• DB: ✅`,
     ];
+
+    if (userRow.is_owner === 1) {
+      const users = listOnboardedUsers();
+      lines.push(`• Active users (owner): ${users.length}`);
+    }
 
     await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
   });

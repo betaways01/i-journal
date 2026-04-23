@@ -16,7 +16,7 @@ export function saveJournalEntry(params: {
   userId: number;
   entryDate: string;
   dayOfWeek: string;
-  sessionType: 'morning' | 'evening';
+  sessionType: 'morning' | 'evening' | 'drop';
   contentMarkdown: string;
 }): number {
   const db = getDb();

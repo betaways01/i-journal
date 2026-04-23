@@ -10,7 +10,8 @@
     "dev": "nodemon --ignore state/ --exec ts-node src/app.ts",
     "build": "rimraf dist && tsc",
     "start": "node dist/app.js",
-    "get-token": "ts-node scripts/get-token.ts"
+    "get-token": "ts-node scripts/get-token.ts",
+    "smoke": "ts-node scripts/smoke.ts"
   },
   "keywords": [],
   "author": "",

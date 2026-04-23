@@ -81,17 +81,17 @@ function splitReplyAndEntry(response: string): { reply: string; entry: string } 
   };
 }
 
-function computeStreakDays(userId: number, timezone: string): number {
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const start = thirtyDaysAgo.toLocaleDateString('en-CA', { timeZone: timezone });
+function computeStreakDays(userId: number, anchor: Date, timezone: string): number {
+  const anchorStr = anchor.toLocaleDateString('en-CA', { timeZone: timezone });
+  const thirtyDaysBefore = new Date(anchor);
+  thirtyDaysBefore.setDate(thirtyDaysBefore.getDate() - 30);
+  const start = thirtyDaysBefore.toLocaleDateString('en-CA', { timeZone: timezone });
 
-  const entries = getEntriesInDateRange(userId, start, today);
+  const entries = getEntriesInDateRange(userId, start, anchorStr);
   const distinctDates = new Set(entries.map((e) => e.entry_date));
 
   let streak = 0;
-  const cursor = new Date();
+  const cursor = new Date(anchor);
   for (let i = 0; i < 30; i++) {
     const cursorStr = cursor.toLocaleDateString('en-CA', { timeZone: timezone });
     if (distinctDates.has(cursorStr)) {
@@ -172,14 +172,22 @@ async function saveCompiledEntry(
   entryMarkdown: string,
   sessionDate: Date
 ): Promise<void> {
-  const sessionTypeForSave: 'morning' | 'evening' = mode === 'morning' ? 'morning' : 'evening';
   const { dateStr, dayStr } = formatDateForJournal(sessionDate, botUser.profile.timezone);
+
+  // Morning and evening are unique per day; drops are free-floating so they get a
+  // timestamp-suffixed session_type to avoid the UNIQUE(user_id, entry_date, session_type)
+  // constraint clobbering existing morning/evening entries.
+  const sessionTypeForSave: 'morning' | 'evening' | 'drop' =
+    mode === 'morning' ? 'morning' : mode === 'evening' ? 'evening' : 'drop';
+
+  const persistedSessionType =
+    sessionTypeForSave === 'drop' ? (`drop_${Date.now()}` as 'drop') : sessionTypeForSave;
 
   const entryId = saveJournalEntry({
     userId: botUser.row.id,
     entryDate: dateStr,
     dayOfWeek: dayStr,
-    sessionType: sessionTypeForSave,
+    sessionType: persistedSessionType,
     contentMarkdown: entryMarkdown,
   });
 
@@ -189,8 +197,10 @@ async function saveCompiledEntry(
     updateJournalState(String(botUser.row.telegram_id), { lastEveningDate: dateStr });
   }
 
-  const streakDays = computeStreakDays(botUser.row.id, botUser.profile.timezone);
+  const streakDays = computeStreakDays(botUser.row.id, sessionDate, botUser.profile.timezone);
 
+  // Drops are intentionally local-only — they're casual, and we don't want them overwriting
+  // an existing OneNote morning/evening page for the day.
   let oneNoteUrl: string | null = null;
   let cloudFailed = false;
   if ((mode === 'morning' || mode === 'evening') && getOneNoteStatusForUser(botUser.row).connected) {
@@ -329,7 +339,15 @@ async function handleOnboardingCompletion(
   sessionDate: Date
 ): Promise<Stage> {
   const profile = extractProfileFromResponse(response, botUser);
-  if (!profile) return 'active';
+
+  if (!profile) {
+    // JSON was malformed or missing. Show the user what the AI said (minus the broken block)
+    // and keep the session active so the AI can try again on the next turn.
+    const cleaned = stripProfileBlock(response).trim();
+    if (cleaned) await ctx.reply(cleaned);
+    console.warn('[Companion] Onboarding response had PROFILE_COMPLETE marker but no valid JSON');
+    return 'active';
+  }
 
   const beforeProfile = stripProfileBlock(response);
   const { reply, entry } = splitReplyAndEntry(beforeProfile);
