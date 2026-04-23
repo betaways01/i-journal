@@ -22,6 +22,13 @@ export const POST_SAVE_ACTIONS: InlineKeyboardButton[][] = [
   ],
 ];
 
+export const DROP_INLINE_ACTIONS: InlineKeyboardButton[][] = [
+  [
+    { text: '✅ Save & done', callback_data: 'compile_now' },
+    { text: '✖️ Cancel', callback_data: 'skip_today' },
+  ],
+];
+
 export const STATUS_ACTIONS = (opts: {
   morningDone: boolean;
   eveningDone: boolean;

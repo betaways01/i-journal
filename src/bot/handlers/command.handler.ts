@@ -62,6 +62,7 @@ export function registerCommands(bot: Telegraf): void {
     await ctx.reply(
       `Hey, ${profile.name}. Good to see you.\n\n` +
         `Just message me anytime — I'll pick it up.\n\n` +
+        `Want to change anything? Tell me like you'd tell a friend — *"move morning to 7"* or *"add reading as a section"* — and I'll update it.\n\n` +
         `I'll also check in around *${profile.morningTime}* and *${profile.eveningTime}*.`,
       {
         parse_mode: 'Markdown',

@@ -235,14 +235,18 @@ async function run(): Promise<void> {
     .get(userRow.id) as { c: number };
   assert(remindersOfKind.c === 1, `only one evening reminder per user (got ${remindersOfKind.c})`);
 
-  section('Response parsing — entry heading detection');
-  const ENTRY_HEADING_RE = /^##\s*[^\n]*(Morning|Evening|Drop)\s*$/m;
+  section('Response parsing — entry heading detection (tightened regex)');
+  const ENTRY_HEADING_RE = /^##\s+[^a-zA-Z\n]+\s*(Morning|Evening|Drop)\s*$/m;
   assert(ENTRY_HEADING_RE.test('## 🌙 Evening\n\nbody'), 'detects "## 🌙 Evening"');
   assert(ENTRY_HEADING_RE.test('## ☀️ Morning\n\nbody'), 'detects "## ☀️ Morning"');
   assert(ENTRY_HEADING_RE.test('## 📝 Drop\n\nbody'), 'detects "## 📝 Drop"');
   assert(ENTRY_HEADING_RE.test('intro text\n\n## 🌙 Evening\nbody'), 'detects mid-response');
   assert(!ENTRY_HEADING_RE.test('Good morning! How was your evening?'), 'does not false-positive on prose');
-  assert(!ENTRY_HEADING_RE.test('## Random heading'), 'does not match unrelated headings');
+  assert(!ENTRY_HEADING_RE.test('## Random heading'), 'does not match unrelated `##` headings');
+  // Regression cases — prose sentences the AI might actually produce
+  assert(!ENTRY_HEADING_RE.test('## How was your Morning'), 'regression: prose "## How was your Morning" rejected');
+  assert(!ENTRY_HEADING_RE.test('## Remember to Drop your tension'), 'regression: "## Remember to Drop..." rejected');
+  assert(!ENTRY_HEADING_RE.test('## Tonight — Evening thoughts'), 'regression: "## Tonight — Evening thoughts" rejected');
 
   section('Settings update parsing');
   const sampleResponse = `Alright, switching your morning check-ins to 7am.\n\n[SETTINGS_UPDATE]\n\`\`\`json\n{ "morningTime": "07:00" }\n\`\`\``;

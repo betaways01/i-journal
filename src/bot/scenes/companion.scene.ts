@@ -24,14 +24,17 @@ import { saveProfileForUser, getProfileForUser } from '../../db/profile.repo';
 import { normalizeProfile, getDefaultProfile, Profile } from '../../profile/defaults';
 import { config } from '../../config';
 import { reloadScheduler } from '../../scheduler';
-import { POST_SAVE_ACTIONS } from '../keyboards';
+import { POST_SAVE_ACTIONS, DROP_INLINE_ACTIONS } from '../keyboards';
 
 const PROFILE_MARKER = '[PROFILE_COMPLETE]';
 const SETTINGS_MARKER = '[SETTINGS_UPDATE]';
 
 type Stage = 'active' | 'compiled';
 
-const ENTRY_HEADING_RE = /^##\s*[^\n]*(Morning|Evening|Drop)\s*$/m;
+// Strict: `## 🌙 Evening` / `## ☀️ Morning` / `## 📝 Drop` — nothing alphabetic between
+// `##` and the mode word. Prevents prose headings like `## How was your Morning` from
+// being mistaken for a compiled entry heading and saved as gibberish.
+const ENTRY_HEADING_RE = /^##\s+[^a-zA-Z\n]+\s*(Morning|Evening|Drop)\s*$/m;
 
 interface StartOptions {
   mode: CompanionMode;
@@ -197,7 +200,10 @@ async function saveCompiledEntry(
     updateJournalState(String(botUser.row.telegram_id), { lastEveningDate: dateStr });
   }
 
-  const streakDays = computeStreakDays(botUser.row.id, sessionDate, botUser.profile.timezone);
+  // For catchup (sessionDate < today), still anchor the streak on the most recent calendar day
+  // so the user's real streak — which includes today if they already journaled it — is shown.
+  const streakAnchor = sessionDate.getTime() > Date.now() - 12 * 60 * 60 * 1000 ? sessionDate : new Date();
+  const streakDays = computeStreakDays(botUser.row.id, streakAnchor, botUser.profile.timezone);
 
   // Drops are intentionally local-only — they're casual, and we don't want them overwriting
   // an existing OneNote morning/evening page for the day.
@@ -330,6 +336,48 @@ function applySettingsUpdateIfPresent(
     applied: true,
     summary,
   };
+}
+
+async function completeOnboardingWithDefaults(
+  ctx: Context,
+  botUser: BotUser,
+  response: string,
+  sessionDate: Date
+): Promise<void> {
+  // AI compiled an entry but forgot the profile JSON. Save defaults so the user isn't
+  // stranded — they can refine with natural-language settings or /settings later.
+  const defaults = getDefaultProfile();
+  defaults.timezone = config.timezone;
+  defaults.name = botUser.row.first_name || defaults.name;
+  defaults.onboardingComplete = true;
+  defaults.createdAt = new Date().toISOString().split('T')[0];
+  defaults.lastReviewDate = new Date().toISOString().split('T')[0];
+  saveProfileForUser(botUser.row.id, defaults);
+  reloadScheduler();
+
+  const { reply, entry } = splitReplyAndEntry(response);
+  if (reply) await ctx.reply(reply);
+
+  if (entry) {
+    const { dateStr, dayStr } = formatDateForJournal(sessionDate, defaults.timezone);
+    saveJournalEntry({
+      userId: botUser.row.id,
+      entryDate: dateStr,
+      dayOfWeek: dayStr,
+      sessionType: 'evening',
+      contentMarkdown: entry,
+    });
+    updateJournalState(String(botUser.row.telegram_id), { lastEveningDate: dateStr });
+    await ctx.reply(entry);
+  }
+
+  await ctx.reply(
+    `🌱 *You're set up, ${defaults.name}.* Using defaults for now — just tell me to change anything ("make my morning time 7am", "add reading as a section") and it'll stick.`,
+    { parse_mode: 'Markdown' }
+  );
+
+  sessionStore.clear(String(botUser.row.telegram_id));
+  console.log('[Companion] Onboarding completed via defaults-fallback for', botUser.row.telegram_id);
 }
 
 async function handleOnboardingCompletion(
@@ -513,9 +561,17 @@ export async function handleCompanionMessage(
     state.conversationHistory.push({ role: 'assistant', content: response });
     sessionStore.set(telegramId, state);
 
-    if (mode === 'onboarding' && response.includes(PROFILE_MARKER) && botUser) {
-      await handleOnboardingCompletion(ctx, botUser, response, state.startedAt);
-      return;
+    if (mode === 'onboarding' && botUser) {
+      if (response.includes(PROFILE_MARKER)) {
+        await handleOnboardingCompletion(ctx, botUser, response, state.startedAt);
+        return;
+      }
+      // AI produced a compiled entry without the profile block — fall back to defaults
+      // so we don't strand the user with an orphaned entry and no profile.
+      if (detectEntry(response).found) {
+        await completeOnboardingWithDefaults(ctx, botUser, response, state.startedAt);
+        return;
+      }
     }
 
     let working = response;
@@ -541,7 +597,10 @@ export async function handleCompanionMessage(
       return;
     }
 
-    await ctx.reply(reply || working);
+    // On drop/vent replies, give an explicit "Save & done" escape so the user isn't
+    // dependent on natural ending cues — drops especially can hang otherwise.
+    const showDropActions = mode === 'drop' || mode === 'vent';
+    await ctx.reply(reply || working, showDropActions ? { reply_markup: { inline_keyboard: DROP_INLINE_ACTIONS } } : undefined);
   } catch (error) {
     console.error('[Companion] Error processing message:', error);
     await ctx.reply('Sorry, I had a brief hiccup. Could you say that again?');

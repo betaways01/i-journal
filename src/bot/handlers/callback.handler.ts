@@ -2,7 +2,7 @@ import { Context, Telegraf } from 'telegraf';
 import { sessionStore } from '../../state/session.store';
 import { startMorningSession } from '../scenes/morning.scene';
 import { startEveningSession } from '../scenes/evening.scene';
-import { startCompanionSession } from '../scenes/companion.scene';
+import { startCompanionSession, handleCompanionMessage } from '../scenes/companion.scene';
 import { startSettings } from '../scenes/settings.scene';
 import { registerUserFromContext } from '../userContext';
 import {
@@ -123,6 +123,19 @@ export function registerCallbacks(bot: Telegraf): void {
           return;
         }
         await startCompanionSession(ctx as unknown as Context, telegramId, { mode: 'drop' });
+        return;
+      }
+      case 'compile_now': {
+        if (!sessionStore.has(telegramId)) {
+          await ctx.reply('No active session to save.');
+          return;
+        }
+        // Nudge the AI to compile what's there as an entry now.
+        await handleCompanionMessage(
+          ctx as unknown as Context,
+          telegramId,
+          '[system] Please compile what we have into an entry now — I need to stop here.'
+        );
         return;
       }
       case 'drop_continue': {
