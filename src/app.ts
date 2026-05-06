@@ -13,6 +13,10 @@ function isTelegramPollingConflict(error: unknown): boolean {
   return response?.error_code === 409;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function main(): Promise<void> {
   console.log('[i-Journal] Starting up...');
 
@@ -33,9 +37,26 @@ async function main(): Promise<void> {
     console.log('[i-Journal] Bot is running! Listening for messages...');
   };
 
-  const launchPromise = bot.launch(() => {
-    markStarted();
-  });
+  const launchWithRetry = async () => {
+    const maxAttempts = 6;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await bot.launch(() => {
+          markStarted();
+        });
+        return;
+      } catch (error) {
+        if (!isTelegramPollingConflict(error) || attempt === maxAttempts) {
+          throw error;
+        }
+        const delayMs = Math.min(5000 * attempt, 20_000);
+        console.warn(
+          `[i-Journal] Telegram polling is still held by another instance. Retrying in ${Math.round(delayMs / 1000)}s...`
+        );
+        await sleep(delayMs);
+      }
+    }
+  };
 
   const shutdown = (signal: string) => {
     console.log(`[i-Journal] Shutting down (${signal})...`);
@@ -49,14 +70,13 @@ async function main(): Promise<void> {
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
 
-  await launchPromise;
+  await launchWithRetry();
 }
 
 main().catch((error) => {
   if (isTelegramPollingConflict(error)) {
     console.error(
-      '[i-Journal] Fatal error: another instance is already polling Telegram for this bot token. ' +
-        'Stop the other deployment/process or use a different bot token before starting this app.'
+      '[i-Journal] Fatal error: Telegram polling stayed locked by another instance after startup retries.'
     );
   } else {
     console.error('[i-Journal] Fatal error:', error);
