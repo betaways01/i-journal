@@ -175,10 +175,13 @@ export function registerCallbacks(bot: Telegraf): void {
         const body = entry.content_markdown.length > 3500
           ? entry.content_markdown.slice(0, 3500) + '\n\n…(truncated)'
           : entry.content_markdown;
+        const isDrop = entry.session_type.startsWith('drop');
         const cloudNote = entry.onenote_url
           ? `\n\n[Open in OneNote](${entry.onenote_url})`
           : entry.saved_to_cloud === 0 && getOneNoteStatusForUser(userRow).connected
-            ? '\n\n_(not yet synced to OneNote)_'
+            ? isDrop
+              ? '\n\n_(drop entries save locally for now)_'
+              : '\n\n_(not yet synced to OneNote)_'
             : '';
         await ctx.reply(header + body + cloudNote, { parse_mode: 'Markdown' });
         return;

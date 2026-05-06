@@ -37,6 +37,70 @@ function safeTime(value: unknown): string | undefined {
   return parsed ?? undefined;
 }
 
+function compactAreaLabel(value: string): string | null {
+  const cleaned = value.trim();
+  if (!cleaned) return null;
+  const lower = cleaned.toLowerCase();
+
+  if (/\b(work|freelanc|client|business|career|project|payment|api|code|build)\b/.test(lower)) {
+    return 'Work';
+  }
+  if (/\b(family|wife|husband|kid|child|children|son|daughter|hilda|tavana|reign|home)\b/.test(lower)) {
+    return 'Family';
+  }
+  if (/\bgod\s+(?:and|&)\s+ministry\b/.test(lower)) {
+    return 'God & Ministry';
+  }
+  if (/\bgod\b/.test(lower)) {
+    return 'God';
+  }
+  if (/\bfaith\b/.test(lower)) {
+    return 'Faith';
+  }
+  if (/\b(ministry|prayer|church|scripture|word study|fasting|spiritual)\b/.test(lower)) {
+    return 'God & Ministry';
+  }
+  if (/^personal(?:\s+life)?$/i.test(cleaned.replace(/[.!?]+$/g, '').trim())) {
+    return 'Personal';
+  }
+  if (/\b(personal|growth|improvement|goal|goals|self|habit)\b/.test(lower)) {
+    return 'Personal Growth';
+  }
+  if (/\b(learn|study|school|reading|word|vocabulary)\b/.test(lower)) {
+    return 'Learning';
+  }
+  if (/\b(health|fitness|body|sleep|food|exercise)\b/.test(lower)) {
+    return 'Health';
+  }
+  if (/\b(money|finance|financial|budget|saving)\b/.test(lower)) {
+    return 'Money';
+  }
+
+  const simple = cleaned
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?]+$/g, '');
+  if (/[-:()]/.test(simple)) return null;
+  if (simple.split(' ').length > 3) return null;
+  return simple;
+}
+
+function extractDurableSetupDetails(text?: string): string[] {
+  if (!text) return [];
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const facts: string[] = [];
+
+  for (const line of lines) {
+    if (/\b(wife|husband|kid|kids|child|children|family|hilda|tavana|reign|freelanc|prayer|church|fasting|ministry|word study|goal|improvement)\b/i.test(line)) {
+      facts.push(line.replace(/\s+/g, ' ').slice(0, 180));
+    }
+  }
+
+  return facts.slice(0, 8);
+}
+
 function extractJsonObject(text: string): Record<string, unknown> | null {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced?.[1] ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
@@ -155,7 +219,20 @@ export function mergeBootstrapPatch(draft: BootstrapDraft, patch: BootstrapPatch
 
   if (patch.areas && patch.areas.length > 0) {
     const existing = next.areas.map((area) => area.title).join(', ');
-    next.areas = parseAreaSections(unique([existing, ...patch.areas]).filter(Boolean).join(', '));
+    const compactedRaw = patch.areas
+      .map(compactAreaLabel)
+      .filter((area): area is string => Boolean(area));
+    const compacted = compactedRaw.includes('God & Ministry')
+      ? compactedRaw.filter((area) => area !== 'God' && area !== 'Faith')
+      : compactedRaw;
+    const detailedAsNotes = patch.areas
+      .filter((area) => {
+        const compactedArea = compactAreaLabel(area);
+        return compactedArea !== null && compactedArea.toLowerCase() !== area.trim().toLowerCase();
+      })
+      .map((area) => `Setup detail: ${area.trim()}`);
+    next.areas = parseAreaSections(unique([existing, ...compacted]).filter(Boolean).join(', '));
+    next.notes = unique([...next.notes, ...detailedAsNotes]).slice(-20);
   }
 
   if (patch.morningTime) next.morningTime = patch.morningTime;
@@ -168,6 +245,7 @@ export function mergeBootstrapPatch(draft: BootstrapDraft, patch: BootstrapPatch
   if (patch.notes) {
     next.notes = unique([...next.notes, ...patch.notes]).slice(-20);
   }
+  next.notes = unique([...next.notes, ...extractDurableSetupDetails(rawUserText)]).slice(-20);
 
   return next;
 }
@@ -223,12 +301,17 @@ Critical behavior:
 - Do NOT enforce formats. Interpret natural language.
 - Distinguish the user naming themselves from the user naming the companion.
 - Distinguish preferred name, given name, nicknames, and aliases.
+- Treat areas as broad top-level buckets only. Details about wife/kids/projects/rhythms belong in notes, not areas.
+- Good areas: Work, Family, God, God & Ministry, Faith, Personal, Personal Growth, Health, Learning, Money.
+- Bad areas: "Family - wife Hilda", "Tavana (4)", "Sunday Church", "Word Study", "Payment features". Put those details in notes.
 - If user says "King Kang, or sometime Francis", infer preferredName "King Kang" and alias "Francis"; ask a light confirmation in assistantReply if uncertain.
 - If user says "My name is Hilda but call me Hils", infer givenName "Hilda", preferredName "Hils", nicknames ["Hils"].
 - If user says "Call yourself Nia", update agentIdentity.name, not userIdentity.
+- If user says "Looks right, change your name to Frankie", treat it as a correction before completion: patch agentIdentity.name and set readyToComplete true, but do not say it was saved yet.
 - Interpret times flexibly. "9.30" means 09:30 unless labeled evening/night, then 21:30 can be appropriate. "8.30 evening" means 20:30.
 - If only one check-in time is present, patch only the clear one.
 - Ask one natural next question at a time in assistantReply.
+- Do not rush setup. If the user gives rich life details, warmly acknowledge and leave space for more: they may add more areas, people, rhythms, routines, or start.
 - If enough setup facts are known, set readyToComplete true and make assistantReply a warm confirmation invitation.
 - Missing should only include fields still truly needed: identity, areas, times.
 

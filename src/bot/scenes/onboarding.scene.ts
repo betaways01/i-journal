@@ -132,7 +132,19 @@ function finalSummary(draft: BootstrapDraft): string {
     `Morning check-in: ${morningTime}`,
     `Evening journal: ${eveningTime}`,
     routines,
+    '',
+    'If I missed a person, rhythm, weak spot, or routine, choose Keep adjusting and tell me naturally.',
   ].join('\n');
+}
+
+function isPureConfirmation(text: string): boolean {
+  return /^(yes|yep|yeah|correct|looks right|looks good|confirm|start|start journaling|that works|all good)[.! ]*$/i.test(
+    text.trim()
+  );
+}
+
+function isPureRejection(text: string): boolean {
+  return /^(no|change|adjust|not quite|wait|hold on)[.! ]*$/i.test(text.trim());
 }
 
 async function showFinalConfirmation(ctx: Context, userId: string, draft: BootstrapDraft): Promise<void> {
@@ -200,7 +212,9 @@ async function completeOnboarding(ctx: Context, userId: string, draft: Bootstrap
   await ctx.reply(formatProfileCard(profile), {
     reply_markup: { inline_keyboard: QUICK_ACTIONS },
   });
-  await ctx.reply('From here, you can speak naturally. If you want a recurring thing, just say it like a normal request.');
+  await ctx.reply(
+    'From here, talk to me normally. You can journal, add memories, rename me, ask for guidance, or set little routines like "teach me a useful word every morning."'
+  );
 }
 
 export async function startOnboarding(ctx: Context, userId: string): Promise<void> {
@@ -224,14 +238,13 @@ export async function handleOnboardingMessage(ctx: Context, userId: string, text
 
   const draft = readDraft(state);
   const awaitingFinalConfirm = state.flow?.step === 'final_confirm';
-  const lowered = text.trim().toLowerCase();
 
-  if (awaitingFinalConfirm && /^(yes|yep|correct|looks right|looks good|confirm|start)\b/i.test(lowered)) {
+  if (awaitingFinalConfirm && isPureConfirmation(text)) {
     await completeOnboarding(ctx, userId, draft);
     return;
   }
 
-  if (awaitingFinalConfirm && /^(no|change|adjust|not quite|wait)\b/i.test(lowered)) {
+  if (awaitingFinalConfirm && isPureRejection(text)) {
     setBootstrapState(userId, draft, { history: state.conversationHistory });
     await ctx.reply('No problem. Tell me what to change in your own words.');
     return;

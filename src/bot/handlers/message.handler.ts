@@ -7,6 +7,28 @@ import { handleRoutineSetupMessage, maybeStartRoutineFromText } from '../scenes/
 import { registerUserFromContext } from '../userContext';
 import { getProfileForUser } from '../../db/profile.repo';
 
+function textWithReplyContext(ctx: Context, text: string): string {
+  const message = ctx.message as {
+    reply_to_message?: {
+      text?: string;
+      caption?: string;
+      from?: { is_bot?: boolean; first_name?: string };
+    };
+  };
+  const quoted = message.reply_to_message?.text ?? message.reply_to_message?.caption;
+  if (!quoted) return text;
+
+  const trimmed = text.trim();
+  if (/^[.。…]+$/.test(trimmed)) {
+    return quoted;
+  }
+
+  return [
+    `[replying to: ${quoted}]`,
+    text,
+  ].join('\n');
+}
+
 export async function handleMessage(ctx: Context): Promise<void> {
   const userRow = registerUserFromContext(ctx);
   if (!userRow) return;
@@ -14,7 +36,7 @@ export async function handleMessage(ctx: Context): Promise<void> {
   const message = ctx.message;
   if (!message || !('text' in message)) return;
 
-  const text = message.text;
+  const text = textWithReplyContext(ctx, message.text);
   if (text.startsWith('/')) return;
 
   const telegramId = userRow.telegram_id;

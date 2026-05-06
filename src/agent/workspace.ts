@@ -1,6 +1,7 @@
 import { UserRow } from '../db/users.repo';
 import {
   ensureWorkspaceDocs,
+  getWorkspaceDoc,
   listWorkspaceDocs,
   upsertWorkspaceDoc,
 } from '../db/agentWorkspace.repo';
@@ -185,6 +186,85 @@ Emoji: ${identity.emoji || '🏆'}
 The user may rename the companion. Keep this separate from USER.md.`;
 }
 
+function readDocLine(content: string, label: string): string | undefined {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, 'im'));
+  return match?.[1]?.trim();
+}
+
+export function readAgentIdentity(userId: number): AgentIdentityDraft {
+  const doc = getWorkspaceDoc(userId, 'IDENTITY.md')?.content ?? '';
+  return {
+    name:
+      readDocLine(doc, 'Agent name') ??
+      readDocLine(doc, 'Default agent name') ??
+      'i-Journal',
+    vibe:
+      readDocLine(doc, 'Vibe') ??
+      readDocLine(doc, 'Default vibe') ??
+      'warm, grounded, quietly capable',
+    emoji:
+      readDocLine(doc, 'Emoji') ??
+      readDocLine(doc, 'Default emoji') ??
+      '🏆',
+  };
+}
+
+export function updateAgentIdentityForUser(
+  userId: number,
+  patch: Partial<AgentIdentityDraft>
+): AgentIdentityDraft {
+  const next = {
+    ...readAgentIdentity(userId),
+    ...patch,
+  };
+  upsertWorkspaceDoc(userId, 'IDENTITY.md', renderIdentityDocFromDraft(next));
+  return next;
+}
+
+export function renderMemoryDocFromDraft(draft: BootstrapDraft): string {
+  const notes = draft.notes.map((note) => note.trim()).filter(Boolean);
+  return `# MEMORY.md
+
+## Durable Facts
+${notes.length > 0 ? notes.map((note) => `- ${note}`).join('\n') : '- No curated long-term memory yet.'}
+
+Use these as quiet context. Do not turn every fact into a journal area, and do not recite them back unless they are relevant.`;
+}
+
+export function appendMemoryFacts(userId: number, facts: string[]): void {
+  const cleaned = facts.map((fact) => fact.trim()).filter(Boolean);
+  if (cleaned.length === 0) return;
+
+  const currentRaw = getWorkspaceDoc(userId, 'MEMORY.md')?.content ?? '# MEMORY.md\n\n## Durable Facts\n';
+  const current = currentRaw
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed !== 'No curated long-term memory yet.' && trimmed !== '- No curated long-term memory yet.';
+    })
+    .join('\n');
+  const existingBullets = new Set(
+    current
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('- '))
+      .map((line) => line.slice(2).trim().toLowerCase())
+  );
+  const newBullets = cleaned.filter((fact) => !existingBullets.has(fact.toLowerCase()));
+  if (newBullets.length === 0) return;
+
+  const base = current.includes('## Durable Facts')
+    ? current.trim()
+    : `${current.trim()}\n\n## Durable Facts`;
+
+  upsertWorkspaceDoc(
+    userId,
+    'MEMORY.md',
+    `${base}\n${newBullets.map((fact) => `- ${fact}`).join('\n')}`
+  );
+}
+
 export function markBootstrapComplete(userId: number): void {
   upsertWorkspaceDoc(
     userId,
@@ -200,6 +280,7 @@ The first-run ritual has finished. Future profile changes should go through natu
 export function saveWorkspaceAfterBootstrap(userId: number, draft: BootstrapDraft, profile: Profile): void {
   upsertWorkspaceDoc(userId, 'USER.md', renderUserDocFromDraft(draft, profile));
   upsertWorkspaceDoc(userId, 'IDENTITY.md', renderIdentityDocFromDraft(draft.agentIdentity));
+  upsertWorkspaceDoc(userId, 'MEMORY.md', renderMemoryDocFromDraft(draft));
   markBootstrapComplete(userId);
 }
 

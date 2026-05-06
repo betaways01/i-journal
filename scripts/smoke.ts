@@ -64,8 +64,11 @@ const {
 } = require('../src/agent/bootstrap') as typeof import('../src/agent/bootstrap');
 const {
   emptyBootstrapDraft,
+  appendMemoryFacts,
   ensureAgentWorkspaceForUser,
+  readAgentIdentity,
   renderWorkspaceContext,
+  updateAgentIdentityForUser,
 } = require('../src/agent/workspace') as typeof import('../src/agent/workspace');
 const {
   parseName,
@@ -308,6 +311,44 @@ async function run(): Promise<void> {
   });
   draft = mergeBootstrapPatch(draft, agentNameUnderstanding.patch, 'Call yourself Nia');
   assert(draft.agentIdentity.name === 'Nia', 'bootstrap distinguishes agent name from user name');
+
+  const detailedAreas = normalizeBootstrapUnderstanding({
+    assistantReply: 'I will keep the big buckets clean and remember the details.',
+    patch: {
+      areas: [
+        'Work - Freelancer',
+        'Family - Wife Hilda',
+        'Tavana (4)',
+        'Reign (2)',
+        'Ministry - Daily Morning Prayer',
+        'Word Study',
+        'Sunday Church',
+        'Personal stuff. Improvement, goals etc',
+      ],
+    },
+    confidence: 0.9,
+    needsConfirmation: true,
+    readyToComplete: false,
+    missing: [],
+  });
+  const compactDraft = mergeBootstrapPatch(emptyBootstrapDraft(), detailedAreas.patch);
+  const compactTitles = compactDraft.areas.map((area) => area.title);
+  assert(compactTitles.includes('Work'), 'detailed work setup compacts to Work');
+  assert(compactTitles.includes('Family'), 'family details compact to Family');
+  assert(compactTitles.includes('God & Ministry'), 'faith/ministry details compact to God & Ministry');
+  assert(compactTitles.includes('Personal Growth'), 'personal goals compact to Personal Growth');
+  assert(!compactTitles.includes('Tavana (4)'), 'child detail is not a top-level area');
+  assert(compactDraft.notes.some((note) => note.includes('Tavana')), 'child detail preserved as memory note');
+
+  updateAgentIdentityForUser(userRow.id, { name: 'Frankie' });
+  assert(readAgentIdentity(userRow.id).name === 'Frankie', 'agent identity update persists to workspace');
+  appendMemoryFacts(userRow.id, ['Tavana is 4']);
+  const workspaceAfterMemoryAppend = renderWorkspaceContext(userRow.id, { includeBootstrap: true });
+  assert(workspaceAfterMemoryAppend.includes('- Tavana is 4'), 'memory fact append persists to workspace');
+  assert(
+    !workspaceAfterMemoryAppend.includes('No curated long-term memory yet.'),
+    'memory placeholder is removed after first real fact'
+  );
 
   section('Reminder scheduling + due filter');
   const past = new Date(Date.now() - 60_000);

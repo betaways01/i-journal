@@ -26,9 +26,13 @@ import { config } from '../../config';
 import { reloadScheduler } from '../../scheduler';
 import { POST_SAVE_ACTIONS, DROP_INLINE_ACTIONS } from '../keyboards';
 import {
+  appendMemoryFacts,
   ensureAgentWorkspaceForUser,
+  readAgentIdentity,
   renderWorkspaceContext,
+  updateAgentIdentityForUser,
 } from '../../agent/workspace';
+import { parseTime, todayLocalDate } from './setup.helpers';
 
 const PROFILE_MARKER = '[PROFILE_COMPLETE]';
 const SETTINGS_MARKER = '[SETTINGS_UPDATE]';
@@ -71,6 +75,202 @@ function resolveMode(state: ConversationState): CompanionMode {
   if (state.sessionType === 'onboarding') return 'onboarding';
   if (state.sessionType === 'vent') return 'vent';
   return 'drop';
+}
+
+function withoutReplyContext(text: string): string {
+  return text.replace(/^\[replying to:[\s\S]*?\]\n/i, '').trim();
+}
+
+function cleanNameCandidate(value: string): string {
+  return value
+    .trim()
+    .replace(/[.!?]+$/g, '')
+    .replace(/^["'“”]+|["'“”]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 50);
+}
+
+function extractAgentNameChange(text: string): string | null {
+  const cleaned = withoutReplyContext(text);
+  const patterns = [
+    /\b(?:change|rename|set|make)\s+(?:your|the bot'?s|the companion'?s|companion)\s+(?:name\s+)?(?:to|as)\s+([a-zA-Z][a-zA-Z0-9 '\-]{1,50})/i,
+    /\b(?:call yourself|name yourself|your name is|i'?ll call you|you are now|you're now)\s+([a-zA-Z][a-zA-Z0-9 '\-]{1,50})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (match?.[1]) return cleanNameCandidate(match[1]);
+  }
+  return null;
+}
+
+function impliesMissingAgentRename(text: string): boolean {
+  const cleaned = withoutReplyContext(text);
+  return /\b(i changed your name|changed your name|renamed you|gave you a name|i named you)\b/i.test(cleaned)
+    && !extractAgentNameChange(cleaned);
+}
+
+function extractUserNameChange(text: string): string | null {
+  const cleaned = withoutReplyContext(text);
+  const match = cleaned.match(/\b(?:change|set|update)\s+my\s+name\s+(?:to|as)\s+([a-zA-Z][a-zA-Z0-9 '\-]{1,50})/i)
+    ?? cleaned.match(/\b(?:call me|my name is)\s+([a-zA-Z][a-zA-Z0-9 '\-]{1,50})/i);
+  return match?.[1] ? cleanNameCandidate(match[1]) : null;
+}
+
+function extractScheduleChange(text: string): { key: 'morningTime' | 'eveningTime'; time: string } | null {
+  const cleaned = withoutReplyContext(text);
+  const kind = /\bmorning\b/i.test(cleaned)
+    ? 'morningTime'
+    : /\b(evening|night|journal)\b/i.test(cleaned)
+      ? 'eveningTime'
+      : null;
+  if (!kind) return null;
+  const time = parseTime(cleaned);
+  return time ? { key: kind, time } : null;
+}
+
+function extractMemoryFact(text: string): string | null {
+  const cleaned = withoutReplyContext(text);
+  const match = cleaned.match(/\b(?:remember|note|keep in mind)\s+(?:that\s+)?(.{4,180})/i);
+  return match?.[1] ? match[1].trim().replace(/[.!?]+$/g, '') : null;
+}
+
+function isAgentNameQuestion(text: string): boolean {
+  const cleaned = withoutReplyContext(text);
+  return /\b(what('?s| is) your name|who are you|what should i call you)\b/i.test(cleaned);
+}
+
+function isDateTimeQuestion(text: string): boolean {
+  const cleaned = withoutReplyContext(text);
+  return /\b(what('?s| is) (the )?(date|day|time)|when is today|what day is it|what date is it)\b/i.test(cleaned);
+}
+
+function isUsageGuidanceQuestion(text: string): boolean {
+  const cleaned = withoutReplyContext(text);
+  return /\b(what can you do|how (do|can) i use|help me use|how can you help|achieve more|use you better|weaker areas|weak areas|improve with you)\b/i.test(cleaned);
+}
+
+async function handleImmediateAgentAction(
+  ctx: Context,
+  botUser: BotUser,
+  text: string,
+  state: ConversationState
+): Promise<boolean> {
+  if (state.flow?.name === 'agent_action' && state.flow.step === 'agent_name') {
+    const name = cleanNameCandidate(withoutReplyContext(text));
+    if (name && name.length >= 2) {
+      const identity = updateAgentIdentityForUser(botUser.row.id, { name });
+      sessionStore.set(botUser.telegramId, {
+        ...state,
+        flow: undefined,
+      });
+      await ctx.reply(`Got it - I'm ${identity.name} now. Thanks for the reminder, ${botUser.profile.name}.`);
+      return true;
+    }
+  }
+
+  if (impliesMissingAgentRename(text)) {
+    sessionStore.set(botUser.telegramId, {
+      ...state,
+      flow: {
+        name: 'agent_action',
+        step: 'agent_name',
+        data: {},
+      },
+    });
+    await ctx.reply("You're right - what name should I use?");
+    return true;
+  }
+
+  const agentRename = extractAgentNameChange(text);
+  if (agentRename) {
+    const identity = updateAgentIdentityForUser(botUser.row.id, { name: agentRename });
+    await ctx.reply(`Got it - I'm ${identity.name} now. Thanks for naming me properly.`);
+    return true;
+  }
+
+  const userRename = extractUserNameChange(text);
+  if (userRename) {
+    const current = getProfileForUser(botUser.row.id);
+    if (current) {
+      saveProfileForUser(botUser.row.id, {
+        ...current,
+        name: userRename,
+        lastReviewDate: todayLocalDate(current.timezone),
+        onboardingComplete: true,
+      });
+      await ctx.reply(`Got it - I'll call you ${userRename}.`);
+      return true;
+    }
+  }
+
+  const scheduleChange = extractScheduleChange(text);
+  if (scheduleChange) {
+    const current = getProfileForUser(botUser.row.id);
+    if (current) {
+      const updated = {
+        ...current,
+        [scheduleChange.key]: scheduleChange.time,
+        lastReviewDate: todayLocalDate(current.timezone),
+        onboardingComplete: true,
+      };
+      saveProfileForUser(botUser.row.id, updated);
+      reloadScheduler();
+      await ctx.reply(
+        `${scheduleChange.key === 'morningTime' ? 'Morning check-in' : 'Evening journal'} moved to ${scheduleChange.time}.`
+      );
+      return true;
+    }
+  }
+
+  const memoryFact = extractMemoryFact(text);
+  if (memoryFact) {
+    appendMemoryFacts(botUser.row.id, [memoryFact]);
+    await ctx.reply("I'll remember that.");
+    return true;
+  }
+
+  if (isAgentNameQuestion(text)) {
+    const identity = readAgentIdentity(botUser.row.id);
+    await ctx.reply(`I'm ${identity.name ?? 'i-Journal'} - your journal companion.`);
+    return true;
+  }
+
+  if (isDateTimeQuestion(text)) {
+    const now = new Date();
+    const date = now.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      timeZone: botUser.profile.timezone,
+    });
+    const time = now.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+      timeZone: botUser.profile.timezone,
+    });
+    await ctx.reply(`It's ${date}, ${time}.`);
+    return true;
+  }
+
+  if (isUsageGuidanceQuestion(text)) {
+    await ctx.reply(
+      [
+        'Use me in three ways:',
+        '',
+        '1. Journal normally: tell me what happened, even messily.',
+        '2. Ask me to remember things: people, projects, routines, weak spots.',
+        '3. Ask for help: "help me be better with family", "teach me a word daily", "remind me to pray on Wednesdays".',
+        '',
+        'When I notice a weaker area, I can gently nudge you with one useful thought, not a lecture.'
+      ].join('\n')
+    );
+    return true;
+  }
+
+  return false;
 }
 
 function detectEntry(response: string): { found: boolean; index: number } {
@@ -549,6 +749,10 @@ export async function handleCompanionMessage(
   const mode = resolveMode(state);
   const botUser = loadBotUser(telegramId);
   if (!botUser && mode !== 'onboarding') return;
+
+  if (botUser && await handleImmediateAgentAction(ctx, botUser, text, state)) {
+    return;
+  }
 
   const memory = botUser
     ? await loadMemoryFor(botUser, state.startedAt)

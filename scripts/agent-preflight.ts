@@ -84,6 +84,10 @@ function includesTitle(profile: { sections: Array<{ title: string }> }, title: s
   return titles(profile).some((value) => value.toLowerCase() === title.toLowerCase());
 }
 
+function includesAnyTitle(profile: { sections: Array<{ title: string }> }, options: string[]): boolean {
+  return options.some((title) => includesTitle(profile, title));
+}
+
 async function run(): Promise<void> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is required for agent preflight.');
@@ -108,6 +112,11 @@ async function run(): Promise<void> {
     handleOnboardingMessage,
     handleOnboardingCallback,
   } = require('../src/bot/scenes/onboarding.scene') as typeof import('../src/bot/scenes/onboarding.scene');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const {
+    startCompanionSession,
+    handleCompanionMessage,
+  } = require('../src/bot/scenes/companion.scene') as typeof import('../src/bot/scenes/companion.scene');
 
   getDb();
   console.log(`Agent preflight DB: ${process.env.DB_PATH}`);
@@ -117,10 +126,12 @@ async function run(): Promise<void> {
     telegramId: string;
     firstName: string;
     turns: string[];
+    finalAdjustmentText?: string;
     check: (data: {
       profile: NonNullable<ReturnType<typeof getProfileForUser>>;
       userDoc: string;
       identityDoc: string;
+      memoryDoc: string;
       userRow: NonNullable<ReturnType<typeof getUserByTelegramId>>;
     }) => void;
   }): Promise<void> {
@@ -142,6 +153,15 @@ async function run(): Promise<void> {
     const state = sessionStore.get(params.telegramId);
     assert(state?.flow?.step === 'final_confirm', 'setup reached final confirmation');
 
+    if (params.finalAdjustmentText) {
+      console.log(`    user: ${params.finalAdjustmentText}`);
+      seen = ctx.replies.length;
+      await handleOnboardingMessage(ctx as never, params.telegramId, params.finalAdjustmentText);
+      dumpNewReplies(ctx, seen);
+      const adjustedState = sessionStore.get(params.telegramId);
+      assert(adjustedState?.flow?.step === 'final_confirm', 'adjustment returns to final confirmation');
+    }
+
     seen = ctx.replies.length;
     await handleOnboardingCallback(ctx as never, params.telegramId, 'onb_confirm');
     dumpNewReplies(ctx, seen);
@@ -157,10 +177,12 @@ async function run(): Promise<void> {
     const byKey = new Map(docs.map((doc) => [doc.key, doc.content]));
     const userDoc = byKey.get('USER.md') ?? '';
     const identityDoc = byKey.get('IDENTITY.md') ?? '';
+    const memoryDoc = byKey.get('MEMORY.md') ?? '';
     assert(userDoc.includes('# USER.md'), 'USER.md saved');
     assert(identityDoc.includes('# IDENTITY.md'), 'IDENTITY.md saved');
+    assert(memoryDoc.includes('# MEMORY.md'), 'MEMORY.md saved');
 
-    params.check({ profile: profile!, userDoc, identityDoc, userRow: userRow! });
+    params.check({ profile: profile!, userDoc, identityDoc, memoryDoc, userRow: userRow! });
   }
 
   await scenario({
@@ -175,9 +197,10 @@ async function run(): Promise<void> {
       assert(userDoc.includes('Aliases: Francis'), 'Francis stored as alias, not glued into preferred name');
       assert(profile.morningTime === '09:30', `morning time 09:30 (got ${profile.morningTime})`);
       assert(profile.eveningTime === '20:30', `evening time 20:30 (got ${profile.eveningTime})`);
-      for (const title of ['Work', 'Family', 'Faith', 'Personal']) {
-        assert(includesTitle(profile, title), `area captured: ${title}`);
-      }
+      assert(includesTitle(profile, 'Work'), 'area captured: Work');
+      assert(includesTitle(profile, 'Family'), 'area captured: Family');
+      assert(includesAnyTitle(profile, ['Faith', 'God', 'God & Ministry']), 'area captured: Faith/God');
+      assert(includesAnyTitle(profile, ['Personal', 'Personal Life', 'Personal Growth']), 'area captured: Personal');
     },
   });
 
@@ -196,9 +219,9 @@ async function run(): Promise<void> {
       assert(identityDoc.includes('Agent name: Nia'), 'agent name Nia stored in IDENTITY.md');
       assert(profile.morningTime === '06:00', `morning time 06:00 (got ${profile.morningTime})`);
       assert(profile.eveningTime === '21:00', `evening time 21:00 (got ${profile.eveningTime})`);
-      for (const title of ['God', 'Family', 'Personal Life']) {
-        assert(includesTitle(profile, title), `area captured: ${title}`);
-      }
+      assert(includesAnyTitle(profile, ['God', 'God & Ministry', 'Faith']), 'area captured: God/Faith');
+      assert(includesTitle(profile, 'Family'), 'area captured: Family');
+      assert(includesAnyTitle(profile, ['Personal', 'Personal Life', 'Personal Growth']), 'area captured: Personal');
     },
   });
 
@@ -219,6 +242,87 @@ async function run(): Promise<void> {
       assert(routine, 'daily learning routine created from natural request');
     },
   });
+
+  await scenario({
+    label: 'rich life details stay as memory, not messy areas',
+    telegramId: '910000004',
+    firstName: 'Francis',
+    turns: [
+      'You are Kling.',
+      'Francis. Maybe King Kang when am cool or on weekends.',
+      [
+        'Work - I am a freelancer.',
+        'Family - wife Hilda, two kids Tavana, 4 and Reign, 2.',
+        'God and Ministry - everyday morning prayer and studying the word, Sunday church. Wednesday prayer and fasting.',
+        'Personal stuff. Improvement, goals etc.',
+      ].join('\n\n'),
+      'Morning after I wake up and after prayer, that is around 9am. In the evening after dinner, that is around 9pm.',
+    ],
+    finalAdjustmentText: 'Looks right. Change your name to Frankie.',
+    check: ({ profile, identityDoc, memoryDoc }) => {
+      assert(profile.name === 'Francis', `preferred name is Francis (got ${profile.name})`);
+      assert(identityDoc.includes('Agent name: Frankie'), 'final correction updates companion name before save');
+      const areaTitles = titles(profile);
+      for (const title of ['Work', 'Family', 'God & Ministry']) {
+        assert(includesTitle(profile, title), `high-level area captured: ${title}`);
+      }
+      assert(
+        includesAnyTitle(profile, ['Personal', 'Personal Life', 'Personal Growth']),
+        'high-level area captured: Personal'
+      );
+      assert(!areaTitles.includes('Tavana (4)'), 'Tavana is not saved as a top-level area');
+      assert(!areaTitles.includes('Sunday Church'), 'Sunday Church is not saved as a top-level area');
+      assert(memoryDoc.toLowerCase().includes('hilda') || memoryDoc.toLowerCase().includes('tavana'), 'family details saved in MEMORY.md');
+      assert(profile.morningTime === '09:00', `morning time 09:00 (got ${profile.morningTime})`);
+      assert(profile.eveningTime === '21:00', `evening time 21:00 (got ${profile.eveningTime})`);
+    },
+  });
+
+  console.log('\n# companion identity actions stay out of the journal');
+  const identityCtx = makeCtx('910000004', 'Francis');
+  let seen = identityCtx.replies.length;
+  await startCompanionSession(identityCtx as never, '910000004', {
+    mode: 'drop',
+    initialUserMessage: "What's your name?",
+  });
+  dumpNewReplies(identityCtx, seen);
+  assert(
+    identityCtx.replies.at(-1)?.text.includes('Frankie'),
+    'companion answers from saved IDENTITY.md'
+  );
+
+  seen = identityCtx.replies.length;
+  await handleCompanionMessage(identityCtx as never, '910000004', 'But I changed your name');
+  dumpNewReplies(identityCtx, seen);
+  assert(
+    /what name/i.test(identityCtx.replies.at(-1)?.text ?? ''),
+    'ambiguous rename asks for the missing name'
+  );
+
+  seen = identityCtx.replies.length;
+  await handleCompanionMessage(identityCtx as never, '910000004', 'Moyo');
+  dumpNewReplies(identityCtx, seen);
+  assert(
+    identityCtx.replies.at(-1)?.text.includes('Moyo'),
+    'pending rename saves the next plain name'
+  );
+
+  seen = identityCtx.replies.length;
+  await handleCompanionMessage(identityCtx as never, '910000004', "What's your name?");
+  dumpNewReplies(identityCtx, seen);
+  assert(
+    identityCtx.replies.at(-1)?.text.includes('Moyo'),
+    'renamed companion answers correctly without journaling the meta question'
+  );
+
+  seen = identityCtx.replies.length;
+  await handleCompanionMessage(identityCtx as never, '910000004', 'How can I use you better for weaker areas?');
+  dumpNewReplies(identityCtx, seen);
+  assert(
+    /journal normally/i.test(identityCtx.replies.at(-1)?.text ?? '') &&
+      /weaker area/i.test(identityCtx.replies.at(-1)?.text ?? ''),
+    'usage guidance answers directly without turning into a journal entry'
+  );
 
   closeDb();
   fs.rmSync(tmpDir, { recursive: true, force: true });

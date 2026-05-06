@@ -20,6 +20,7 @@ const EMOJI_BY_KEY: Record<string, string> = {
   friends: '🤝',
   faith: '✝️',
   god: '✝️',
+  god_and_ministry: '✝️',
   prayer: '🙏',
   church: '⛪',
   ministry: '⛪',

@@ -34,7 +34,7 @@ export type SessionType =
   | 'drop'
   | 'vent';
 
-export type ConversationFlowName = 'onboarding' | 'settings' | 'routine_setup';
+export type ConversationFlowName = 'onboarding' | 'settings' | 'routine_setup' | 'agent_action';
 
 export interface ConversationFlowState {
   name: ConversationFlowName;
