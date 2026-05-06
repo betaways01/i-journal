@@ -15,6 +15,7 @@ const BOT_COMMANDS: { command: string; description: string }[] = [
   { command: 'settings', description: 'Adjust sections, schedule, times' },
   { command: 'storage', description: 'Cloud save options' },
   { command: 'skip', description: 'Skip current session' },
+  { command: 'resetsetup', description: 'Rerun adaptive setup' },
   { command: 'health', description: 'Bot status' },
   { command: 'start', description: 'Restart setup or show menu' },
 ];

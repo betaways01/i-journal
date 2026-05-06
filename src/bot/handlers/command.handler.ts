@@ -1,6 +1,6 @@
 import { Context, Telegraf } from 'telegraf';
 import { InlineKeyboardButton } from 'telegraf/types';
-import { listOnboardedUsers, UserRow } from '../../db/users.repo';
+import { listOnboardedUsers, markOnboardingIncomplete, UserRow } from '../../db/users.repo';
 import { getProfileForUser, needsReviewForUser } from '../../db/profile.repo';
 import {
   sessionStore,
@@ -204,6 +204,20 @@ export function registerCommands(bot: Telegraf): void {
     } else {
       await ctx.reply('No active session to skip.');
     }
+  });
+
+  bot.command('resetsetup', async (ctx) => {
+    const userRow = registerUserFromContext(ctx);
+    if (!userRow) return;
+
+    const telegramId = userRow.telegram_id;
+    sessionStore.clear(telegramId);
+    markOnboardingIncomplete(userRow.id);
+
+    await ctx.reply(
+      'Fresh setup started. I will keep your existing journal entries, but rebuild how I understand you.'
+    );
+    await startOnboarding(ctx, telegramId);
   });
 
   bot.command('status', async (ctx) => {
