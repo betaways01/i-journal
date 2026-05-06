@@ -17,6 +17,7 @@ export interface CompanionPromptInput {
   now: Date;
   memory: MemoryContext;
   catchUpDate?: Date;
+  storageSummary?: string;
 }
 
 const CORE_PERSONA = `You are a journal companion. Not a therapist, not a coach, not a script. A friend with a good memory who keeps someone company in their own life.
@@ -47,28 +48,6 @@ NEVER DO
 - Never give advice unless asked. Reflect, ask, witness.
 - Never force a compile. If they gave you one line, one line is the entry.
 - Never mention "sections" or "categories" or "life areas" to the user. Those are YOUR scaffolding, not theirs.`;
-
-const SETTINGS_CAPTURE = `SETTINGS CHANGES MID-CONVERSATION
-If the user says something that clearly changes their setup — the time they want to be checked in on, a section they want added/renamed/removed, their name, their timezone, or a weekly rhythm — acknowledge it naturally in one sentence and then emit a settings-update block AT THE END of your reply.
-
-The block is for the system only; it goes after your spoken reply, separated by a blank line. Only include the fields that actually changed. Do not emit this block for vague mentions ("mornings are rough") — only for actionable changes ("change my morning time to 7").
-
-Format:
-
-[SETTINGS_UPDATE]
-\`\`\`json
-{
-  "morningTime": "07:00",
-  "eveningTime": "22:00",
-  "name": "NewName",
-  "sections": [{ "key": "work", "emoji": "⚙️", "title": "Work" }],
-  "schedule": { "Friday": { "tone": "...", "extraSections": [], "context": "...", "closingStyle": "..." } }
-}
-\`\`\`
-
-Times MUST be 24-hour "HH:MM". Sections replace the full list, so if they're editing you need to include every section (existing + changed). Schedule is a partial merge — only include days that changed.
-
-After emitting this block, continue the conversation normally. Do not compile a journal entry in the same turn as a settings update.`;
 
 const ENTRY_COMPILATION = `COMPILING THE JOURNAL ENTRY
 When the conversation naturally reaches an ending (they go terse, say goodnight, say "that's it", or the thread is clearly complete), compile the entry.
@@ -188,13 +167,49 @@ function memoryBlock(memory: MemoryContext): string {
   return parts.join('\n');
 }
 
+function systemFactsBlock(input: CompanionPromptInput): string {
+  const profile = input.profile;
+  const timezone = profile?.timezone ?? 'UTC';
+  const localDate = input.now.toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: timezone,
+  });
+  const localTime = input.now.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    timeZone: timezone,
+  });
+  const name = profile?.name ?? 'friend';
+  const areas = profile?.sections.map((s) => s.title).join(', ') || 'not set yet';
+  const morning = profile?.morningTime ?? 'not set yet';
+  const evening = profile?.eveningTime ?? 'not set yet';
+  const storage = input.storageSummary
+    ?? 'Entries save first to the private SQLite database. OneNote backup is optional if connected.';
+
+  return [
+    'SYSTEM FACTS (ground truth)',
+    `User: ${name}.`,
+    `Today: ${localDate}. Local time: ${localTime}. Timezone: ${timezone}.`,
+    `Life areas: ${areas}.`,
+    `Morning check-in: ${morning}. Evening journal: ${evening}.`,
+    `Storage: ${storage}`,
+    'Channel: Telegram.',
+    'Useful commands: /start shows shortcuts, /settings changes setup, /storage manages OneNote, /last shows the latest entry.',
+    'If the user asks where entries are saved, answer from Storage above. Do not invent a different storage location.',
+  ].join('\n');
+}
+
 export function buildCompanionPrompt(input: CompanionPromptInput): {
   system: string;
   cacheableCore: string;
   volatileContext: string;
 } {
-  const cacheableCore = [CORE_PERSONA, SETTINGS_CAPTURE, ENTRY_COMPILATION].join('\n\n');
-  const volatileContext = [memoryBlock(input.memory), modeBlock(input)].join('\n\n');
+  const cacheableCore = [CORE_PERSONA, ENTRY_COMPILATION].join('\n\n');
+  const volatileContext = [systemFactsBlock(input), memoryBlock(input.memory), modeBlock(input)].join('\n\n');
 
   return {
     system: cacheableCore + '\n\n' + volatileContext,

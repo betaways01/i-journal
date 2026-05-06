@@ -44,6 +44,26 @@ const {
   getDueReminders,
   deleteReminder,
 } = require('../src/db/reminders.repo') as typeof import('../src/db/reminders.repo');
+const {
+  createRoutine,
+  findRoutineForUserByKind,
+  getDueRoutines,
+  startRoutineRun,
+  finishRoutineRun,
+  updateRoutine,
+} = require('../src/db/routines.repo') as typeof import('../src/db/routines.repo');
+const {
+  computeNextRunAt,
+} = require('../src/routines/schedule') as typeof import('../src/routines/schedule');
+const {
+  runRoutineSkill,
+} = require('../src/routines/skills') as typeof import('../src/routines/skills');
+const {
+  parseName,
+  parseAreaSections,
+  parseTwoTimes,
+  makeProfile,
+} = require('../src/bot/scenes/setup.helpers') as typeof import('../src/bot/scenes/setup.helpers');
 
 let failures = 0;
 
@@ -88,9 +108,11 @@ async function run(): Promise<void> {
   assert(tableNames.includes('sessions'), 'sessions table exists');
   assert(tableNames.includes('pending_reminders'), 'pending_reminders table exists (v2)');
   assert(tableNames.includes('storage_connections'), 'storage_connections table exists');
+  assert(tableNames.includes('routines'), 'routines table exists (v3)');
+  assert(tableNames.includes('routine_runs'), 'routine_runs table exists (v3)');
 
   const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-  assert(versions.v >= 2, `schema at v${versions.v} (≥ 2)`);
+  assert(versions.v >= 3, `schema at v${versions.v} (≥ 3)`);
 
   section('User + profile roundtrip');
   const userRow = upsertUser({ telegramId: 'smoke-user-1', firstName: 'TestUser', isOwner: true });
@@ -193,6 +215,9 @@ async function run(): Promise<void> {
     cacheableCore.includes('Never use the phrases'),
     'persona explicitly forbids templated openers'
   );
+  assert(volatileContext.includes('SYSTEM FACTS'), 'volatile block contains system facts');
+  assert(volatileContext.includes('Storage:'), 'volatile block contains storage truth');
+  assert(volatileContext.includes('Morning check-in: 06:00'), 'volatile block includes morning time');
 
   const { volatileContext: ventContext } = buildCompanionPrompt({
     profile: loaded!,
@@ -203,14 +228,22 @@ async function run(): Promise<void> {
   assert(ventContext.includes('MODE: VENT'), 'vent mode block present');
   assert(ventContext.includes('HEAR'), 'vent mode emphasizes listening');
 
-  const { volatileContext: onbContext } = buildCompanionPrompt({
-    profile: null,
-    mode: 'onboarding',
-    now,
-    memory: { yesterdayEntry: null, weekSummary: null, streakDays: 0, daysSinceLastEntry: null, recentThemes: [] },
+  section('Deterministic setup helpers');
+  assert(parseName('my name is Hilda') === 'Hilda', 'name parser handles natural introduction');
+  const areas = parseAreaSections('Family, God, Personal Life');
+  assert(areas.length === 3, `area parser returns 3 areas (got ${areas.length})`);
+  assert(areas[0].title === 'Family', `first area title is Family (got ${areas[0].title})`);
+  const parsedTimes = parseTwoTimes('06:30 and 21:30');
+  assert(parsedTimes?.morningTime === '06:30', `morning time parsed (got ${parsedTimes?.morningTime})`);
+  assert(parsedTimes?.eveningTime === '21:30', `evening time parsed (got ${parsedTimes?.eveningTime})`);
+  const setupProfile = makeProfile({
+    name: 'Hilda',
+    sections: areas,
+    morningTime: parsedTimes!.morningTime,
+    eveningTime: parsedTimes!.eveningTime,
   });
-  assert(onbContext.includes('ONBOARDING'), 'onboarding mode block present');
-  assert(onbContext.includes('PROFILE_COMPLETE'), 'onboarding prompt tells AI to emit PROFILE_COMPLETE');
+  assert(setupProfile.onboardingComplete === true, 'setup profile marks onboarding complete');
+  assert(setupProfile.sections[1].title === 'God', 'setup profile preserves God area');
 
   section('Reminder scheduling + due filter');
   const past = new Date(Date.now() - 60_000);
@@ -234,6 +267,37 @@ async function run(): Promise<void> {
     .prepare("SELECT COUNT(*) AS c FROM pending_reminders WHERE user_id = ? AND kind = 'evening_remind_later'")
     .get(userRow.id) as { c: number };
   assert(remindersOfKind.c === 1, `only one evening reminder per user (got ${remindersOfKind.c})`);
+
+  section('Routine schedule + word-of-day skill');
+  const schedule = { type: 'daily' as const, time: '06:30', timezone: 'Africa/Nairobi' };
+  const nextToday = computeNextRunAt(schedule, new Date('2026-05-06T03:00:00.000Z'));
+  assert(nextToday.toISOString() === '2026-05-06T03:30:00.000Z', `next run later today (${nextToday.toISOString()})`);
+  const nextTomorrow = computeNextRunAt(schedule, new Date('2026-05-06T04:00:00.000Z'));
+  assert(nextTomorrow.toISOString() === '2026-05-07T03:30:00.000Z', `next run tomorrow (${nextTomorrow.toISOString()})`);
+
+  const routine = createRoutine({
+    userId: userRow.id,
+    kind: 'learning.word_of_day',
+    name: 'Daily conversation word',
+    schedule,
+    config: { goal: 'improve daily conversations' },
+    nextRunAt: new Date(Date.now() - 60_000),
+  });
+  const foundRoutine = findRoutineForUserByKind(userRow.id, 'learning.word_of_day');
+  assert(foundRoutine?.id === routine.id, 'routine can be found by user + kind');
+  const dueRoutines = getDueRoutines(new Date());
+  assert(dueRoutines.some((r) => r.id === routine.id), 'due routine is returned by sweeper query');
+  const skillResult = runRoutineSkill({ routine, profile: loaded! });
+  assert(skillResult.messages[0].includes('Word for today'), 'word-of-day skill creates Telegram message');
+  assert(typeof skillResult.configUpdate?.lastWordIndex === 'number', 'word-of-day skill advances cursor');
+  const runId = startRoutineRun(routine);
+  finishRoutineRun({ runId, status: 'success', outputSummary: skillResult.outputSummary });
+  const updatedRoutine = updateRoutine(routine.id, {
+    config: skillResult.configUpdate,
+    nextRunAt: nextTomorrow,
+    lastRunAt: new Date(),
+  });
+  assert(updatedRoutine?.next_run_at === nextTomorrow.toISOString(), 'routine next_run_at updates after run');
 
   section('Response parsing — entry heading detection (tightened regex)');
   const ENTRY_HEADING_RE = /^##\s+[^a-zA-Z\n]+\s*(Morning|Evening|Drop)\s*$/m;

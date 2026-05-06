@@ -1,105 +1,22 @@
 import { Context } from 'telegraf';
-import { sendMessage } from '../../ai';
 import { sessionStore } from '../../state/session.store';
-import { normalizeProfile, Profile } from '../../profile/defaults';
 import { getProfileForUser, saveProfileForUser } from '../../db/profile.repo';
 import { getUserByTelegramId } from '../../db/users.repo';
 import { reloadScheduler } from '../../scheduler';
 import { ConversationState } from '../../types';
-import { loadBotUser } from '../userContext';
+import {
+  formatAreas,
+  formatProfileCard,
+  parseAreaSections,
+  parseName,
+  parseTime,
+  settingsMenuKeyboard,
+  todayLocalDate,
+} from './setup.helpers';
+import { startWordOfDayProposal } from './routine.scene';
 
-const UPDATE_MARKER = '[PROFILE_UPDATED]';
-
-function buildSettingsPrompt(profile: Profile): string {
-  const currentSections = profile.sections
-    .map((s) => `${s.emoji} ${s.title} (key: ${s.key})`)
-    .join('\n');
-
-  const scheduleSummary = Object.entries(profile.schedule)
-    .map(([day, sched]) => {
-      const extras = sched.extraSections.length
-        ? ` + ${sched.extraSections.map((s) => s.title).join(', ')}`
-        : '';
-      return `${day}: ${sched.tone}${extras}`;
-    })
-    .join('\n');
-
-  return `You are helping ${profile.name} update their i-Journal settings.
-
-Current daily sections:
-${currentSections}
-
-Current weekly schedule:
-${scheduleSummary}
-
-Morning time: ${profile.morningTime} | Evening time: ${profile.eveningTime}
-
-Help them make changes. They might want to:
-- Rename, add, or remove daily sections
-- Adjust day-specific tones or contexts
-- Add/remove special weekly events
-- Change morning/evening times
-
-Keep responses brief (1-2 sentences). Ask clarifying questions if needed.
-
-When done with changes, output ${UPDATE_MARKER} followed by the COMPLETE updated profile as a JSON code block. You MUST use these exact field names:
-- Sections: { "key": "...", "emoji": "...", "title": "..." }
-- Schedule days: { "tone": "...", "extraSections": [...], "context": "...", "closingStyle": "..." }
-- extraSections uses the same format as sections
-
-Current profile for reference (preserve fields the user didn't change):
-\`\`\`json
-${JSON.stringify(
-  {
-    name: profile.name,
-    sections: profile.sections,
-    schedule: profile.schedule,
-    morningTime: profile.morningTime,
-    eveningTime: profile.eveningTime,
-  },
-  null,
-  2
-)}
-\`\`\`
-
-Output format when done:
-${UPDATE_MARKER}
-\`\`\`json
-{ ...complete updated profile... }
-\`\`\``;
-}
-
-function extractUpdatedProfile(response: string, current: Profile): Profile | null {
-  const markerIndex = response.indexOf(UPDATE_MARKER);
-  if (markerIndex === -1) return null;
-
-  const jsonMatch = response.match(/```json\s*([\s\S]*?)```/);
-  if (!jsonMatch) return null;
-
-  try {
-    const parsed = JSON.parse(jsonMatch[1]);
-    const normalized = normalizeProfile(parsed);
-
-    return {
-      ...current,
-      ...normalized,
-      onboardingComplete: true,
-      lastReviewDate: new Date().toISOString().split('T')[0],
-    };
-  } catch (err) {
-    console.error('[Settings] Failed to parse profile JSON:', err);
-    return null;
-  }
-}
-
-export async function startSettings(ctx: Context, userId: string): Promise<void> {
-  const botUser = loadBotUser(userId);
-  if (!botUser) {
-    await ctx.reply('Let\'s set up your journal first — use /start.');
-    return;
-  }
-
-  const state: ConversationState = {
+function settingsState(userId: string, step: string, data: Record<string, unknown> = {}): ConversationState {
+  return {
     userId,
     sessionType: 'settings',
     currentSectionIndex: 0,
@@ -108,24 +25,98 @@ export async function startSettings(ctx: Context, userId: string): Promise<void>
     conversationHistory: [],
     startedAt: new Date(),
     completed: false,
+    flow: {
+      name: 'settings',
+      step,
+      data,
+    },
   };
+}
 
-  sessionStore.set(userId, state);
+function setStep(userId: string, step: string, data: Record<string, unknown> = {}): void {
+  sessionStore.set(userId, settingsState(userId, step, data));
+}
 
-  try {
-    const systemPrompt = buildSettingsPrompt(botUser.profile);
-    const greeting = await sendMessage(systemPrompt, [], 'I want to adjust my journal settings.');
-    state.conversationHistory.push(
-      { role: 'user', content: 'I want to adjust my journal settings.' },
-      { role: 'assistant', content: greeting }
-    );
-    sessionStore.set(userId, state);
-    await ctx.reply(greeting);
-  } catch (error) {
-    console.error('[Settings] Failed to start:', error);
-    sessionStore.clear(userId);
-    await ctx.reply('Sorry, I had trouble opening settings. Try /settings again.');
+async function showSettingsMenu(ctx: Context, userId: string): Promise<void> {
+  const userRow = getUserByTelegramId(userId);
+  if (!userRow) return;
+  const profile = getProfileForUser(userRow.id);
+  if (!profile) {
+    await ctx.reply("Let's set up your journal first - use /start.");
+    return;
   }
+
+  await ctx.reply(
+    [
+      'Settings',
+      '',
+      `Name: ${profile.name}`,
+      `Morning: ${profile.morningTime}`,
+      `Evening: ${profile.eveningTime}`,
+      '',
+      'Areas:',
+      formatAreas(profile.sections),
+    ].join('\n'),
+    { reply_markup: { inline_keyboard: settingsMenuKeyboard() } }
+  );
+}
+
+export async function startSettings(ctx: Context, userId: string): Promise<void> {
+  setStep(userId, 'menu');
+  await showSettingsMenu(ctx, userId);
+}
+
+export async function handleSettingsCallback(
+  ctx: Context,
+  userId: string,
+  dataValue: string
+): Promise<boolean> {
+  if (!dataValue.startsWith('settings_')) return false;
+
+  const userRow = getUserByTelegramId(userId);
+  if (!userRow) return true;
+  const profile = getProfileForUser(userRow.id);
+  if (!profile) {
+    await ctx.reply("Let's set up your journal first - use /start.");
+    return true;
+  }
+
+  if (dataValue === 'settings_name') {
+    setStep(userId, 'name');
+    await ctx.reply('What should I call you?');
+    return true;
+  }
+
+  if (dataValue === 'settings_areas') {
+    setStep(userId, 'areas');
+    await ctx.reply('Send the areas you want me to track, separated by commas.');
+    return true;
+  }
+
+  if (dataValue === 'settings_morning') {
+    setStep(userId, 'morning_time');
+    await ctx.reply('What time should I send the morning check-in? Example: 06:30');
+    return true;
+  }
+
+  if (dataValue === 'settings_evening') {
+    setStep(userId, 'evening_time');
+    await ctx.reply('What time should I send the evening journal prompt? Example: 21:30');
+    return true;
+  }
+
+  if (dataValue === 'settings_word') {
+    await startWordOfDayProposal(ctx, userId);
+    return true;
+  }
+
+  if (dataValue === 'settings_done') {
+    sessionStore.clear(userId);
+    await ctx.reply(formatProfileCard(profile));
+    return true;
+  }
+
+  return true;
 }
 
 export async function handleSettingsMessage(
@@ -142,41 +133,67 @@ export async function handleSettingsMessage(
   const profile = getProfileForUser(userRow.id);
   if (!profile) return;
 
-  const systemPrompt = buildSettingsPrompt(profile);
-  state.conversationHistory.push({ role: 'user', content: text });
+  const step = state.flow?.step ?? 'menu';
 
-  try {
-    const response = await sendMessage(systemPrompt, state.conversationHistory.slice(0, -1), text);
-    state.conversationHistory.push({ role: 'assistant', content: response });
-    sessionStore.set(userId, state);
-
-    const updated = extractUpdatedProfile(response, profile);
-
-    if (updated) {
-      const userMessage = response.substring(0, response.indexOf(UPDATE_MARKER)).trim();
-      if (userMessage) {
-        await ctx.reply(userMessage);
-      }
-
-      saveProfileForUser(userRow.id, updated);
-      reloadScheduler();
-
-      const sectionList = updated.sections.map((s) => `  ${s.emoji} ${s.title}`).join('\n');
-      await ctx.reply(
-        `✅ *Settings updated!*\n\n` +
-          `*Daily sections:*\n${sectionList}\n\n` +
-          `Changes take effect on your next session.`,
-        { parse_mode: 'Markdown' }
-      );
-
-      state.completed = true;
-      sessionStore.clear(userId);
-      console.log('[Settings] Updated for', userId);
-    } else {
-      await ctx.reply(response);
+  if (step === 'name') {
+    const name = parseName(text);
+    if (!name) {
+      await ctx.reply('Send the name you want me to use.');
+      return;
     }
-  } catch (error) {
-    console.error('[Settings] Error:', error);
-    await ctx.reply('Sorry, I had a brief hiccup. Could you say that again?');
+
+    saveProfileForUser(userRow.id, {
+      ...profile,
+      name,
+      lastReviewDate: todayLocalDate(profile.timezone),
+      onboardingComplete: true,
+    });
+    setStep(userId, 'menu');
+    await ctx.reply(`Name updated to ${name}.`);
+    await showSettingsMenu(ctx, userId);
+    return;
   }
+
+  if (step === 'areas') {
+    const sections = parseAreaSections(text);
+    if (sections.length === 0) {
+      await ctx.reply('List a few areas separated by commas, like: Work, Family, Faith, Personal.');
+      return;
+    }
+
+    saveProfileForUser(userRow.id, {
+      ...profile,
+      sections,
+      lastReviewDate: todayLocalDate(profile.timezone),
+      onboardingComplete: true,
+    });
+    setStep(userId, 'menu');
+    await ctx.reply('Areas updated.');
+    await showSettingsMenu(ctx, userId);
+    return;
+  }
+
+  if (step === 'morning_time' || step === 'evening_time') {
+    const time = parseTime(text);
+    if (!time) {
+      await ctx.reply('Send a time like 06:30, 7am, or 21:30.');
+      return;
+    }
+
+    const updated = {
+      ...profile,
+      morningTime: step === 'morning_time' ? time : profile.morningTime,
+      eveningTime: step === 'evening_time' ? time : profile.eveningTime,
+      lastReviewDate: todayLocalDate(profile.timezone),
+      onboardingComplete: true,
+    };
+    saveProfileForUser(userRow.id, updated);
+    reloadScheduler();
+    setStep(userId, 'menu');
+    await ctx.reply(`${step === 'morning_time' ? 'Morning' : 'Evening'} time updated to ${time}.`);
+    await showSettingsMenu(ctx, userId);
+    return;
+  }
+
+  await showSettingsMenu(ctx, userId);
 }

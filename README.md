@@ -9,6 +9,7 @@ An AI-powered daily journaling bot on Telegram. It guides you through structured
 - **Day-aware prompts** — Tone and extra sections adapt to the day of the week (fasting, classes, church, etc.) based on each user's own weekly schedule.
 - **Local-first storage** — Every compiled entry is saved to SQLite first. OneNote sync is best-effort; a failed sync never loses your journal.
 - **Multi-user** — Anyone can `/start` the bot and set up their own profile, schedule, and sections. Each user has their own independent journal state.
+- **Routine engine** — Lightweight DB-backed routines can run helpful recurring actions, starting with a daily conversation word.
 - **Inline button prompts** — Scheduled check-ins arrive with Start / Remind later / Catch up / Skip buttons.
 
 ### Commands
@@ -33,7 +34,7 @@ An AI-powered daily journaling bot on Telegram. It guides you through structured
 - **AI:** Anthropic Claude (Sonnet)
 - **Database:** SQLite via `better-sqlite3` (persistent journaling, sessions, profiles)
 - **Cloud sync (optional):** Microsoft OneNote via Graph API
-- **Scheduling:** `node-cron` (per-user timezone-aware)
+- **Scheduling:** `node-cron` for the heartbeat, SQLite for durable routine state
 - **Hosting:** Railway (with a mounted volume for the SQLite file)
 
 ## Setup
@@ -44,7 +45,7 @@ An AI-powered daily journaling bot on Telegram. It guides you through structured
 - Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - Anthropic API key
 
-Optional (only the owner needs these for OneNote sync):
+Optional (needed for OneNote sync):
 - Microsoft Azure app registration
 
 ### Install
@@ -63,7 +64,15 @@ cp .env.example .env
 
 Only `TELEGRAM_BOT_TOKEN` and `ANTHROPIC_API_KEY` are strictly required. Everything else is optional.
 
-### Get Microsoft Tokens (optional)
+### Microsoft OneNote OAuth (optional)
+
+For users with personal Microsoft accounts, your Azure app registration must support them:
+
+- Azure Portal -> App registrations -> your app -> Authentication
+- Supported account types: "Accounts in any organizational directory and personal Microsoft accounts"
+- Set `MICROSOFT_TENANT_ID=common` in your environment
+
+### Get Legacy Owner Microsoft Tokens (optional)
 
 If you want OneNote sync for your own (owner) account:
 
@@ -98,6 +107,7 @@ src/
 │   ├── journalState.repo.ts # Per-user completion tracking
 │   ├── sessions.repo.ts     # Persistent active sessions
 │   ├── entries.repo.ts      # Compiled journal entries (local source of truth)
+│   ├── routines.repo.ts     # DB-backed recurring routines + run history
 │   └── legacy.migrate.ts    # One-time JSON → SQLite import
 ├── profile/
 │   └── defaults.ts          # Profile type, default template, normalization
@@ -109,7 +119,8 @@ src/
 ├── ai/
 │   └── prompts/             # Day-aware prompt builders (pure — take Profile as arg)
 ├── onenote/                 # Microsoft Graph client (owner-only for now)
-├── scheduler/               # node-cron jobs, one pair per onboarded user
+├── routines/                # Routine schedules and executable skills
+├── scheduler/               # node-cron jobs plus the routine heartbeat
 └── state/                   # Thin session-store facade over SQLite
 scripts/
 └── get-token.ts             # One-time OAuth helper for owner's Microsoft tokens

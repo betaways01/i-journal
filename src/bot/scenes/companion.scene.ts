@@ -158,12 +158,19 @@ async function buildSystemFor(
   memory: MemoryContext,
   catchUpDate?: Date
 ): Promise<{ cacheableCore: string; volatileContext: string }> {
+  const storageSummary = botUser
+    ? getOneNoteStatusForUser(botUser.row).connected
+      ? 'Entries save first to the private SQLite database. OneNote backup/sync is connected for this account.'
+      : 'Entries save first to the private SQLite database. OneNote backup is optional and not connected for this account.'
+    : 'During setup, no journal entries are saved yet. After setup, entries save first to the private SQLite database.';
+
   const { cacheableCore, volatileContext } = buildCompanionPrompt({
     profile: botUser?.profile ?? null,
     mode,
     now,
     memory,
     catchUpDate,
+    storageSummary,
   });
   return { cacheableCore, volatileContext };
 }

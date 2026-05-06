@@ -10,13 +10,25 @@ import {
 
 let server: Server | null = null;
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function renderPage(title: string, message: string): string {
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
+
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${title}</title>
+    <title>${safeTitle}</title>
     <style>
       body {
         margin: 0;
@@ -50,11 +62,27 @@ function renderPage(title: string, message: string): string {
   </head>
   <body>
     <main>
-      <h1>${title}</h1>
-      <p>${message}</p>
+      <h1>${safeTitle}</h1>
+      <p>${safeMessage}</p>
     </main>
   </body>
 </html>`;
+}
+
+function microsoftFailureMessage(description: string): string {
+  if (description.includes('AADSTS50020')) {
+    return (
+      'Microsoft rejected this account because the Azure app is not configured for personal Microsoft accounts. ' +
+      'In Azure Portal, set Supported account types to "Accounts in any organizational directory and personal Microsoft accounts", ' +
+      'then set MICROSOFT_TENANT_ID=common and try again from Telegram.'
+    );
+  }
+
+  if (description) {
+    return `Microsoft sign-in failed: ${description}`;
+  }
+
+  return 'The Microsoft sign-in did not finish cleanly. Start again from Telegram.';
 }
 
 export function startWebServer(bot: Telegraf): void {
@@ -69,6 +97,30 @@ export function startWebServer(bot: Telegraf): void {
   app.get('/auth/callback', async (req, res) => {
     const code = typeof req.query.code === 'string' ? req.query.code : '';
     const state = typeof req.query.state === 'string' ? req.query.state : '';
+    const oauthError = typeof req.query.error === 'string' ? req.query.error : '';
+    const oauthErrorDescription =
+      typeof req.query.error_description === 'string' ? req.query.error_description : '';
+
+    if (oauthError) {
+      const message = microsoftFailureMessage(oauthErrorDescription || oauthError);
+
+      if (state) {
+        try {
+          const userId = parseMicrosoftAuthState(state);
+          const user = getUserById(userId);
+          if (user) {
+            await bot.telegram.sendMessage(user.telegram_id, `OneNote connection failed.\n\n${message}`).catch((error) => {
+              console.error('[Web] Failed to send OneNote failure message to Telegram:', error);
+            });
+          }
+        } catch {
+          // State may be missing or expired; still render the useful page.
+        }
+      }
+
+      res.status(400).send(renderPage('Connection Failed', message));
+      return;
+    }
 
     if (!code || !state) {
       res
@@ -102,9 +154,10 @@ export function startWebServer(bot: Telegraf): void {
       );
     } catch (error) {
       console.error('[Web] Microsoft callback failed:', error);
+      const message = microsoftFailureMessage(error instanceof Error ? error.message : String(error));
       res
         .status(500)
-        .send(renderPage('Connection Failed', 'The Microsoft sign-in did not finish cleanly. Start again from Telegram.'));
+        .send(renderPage('Connection Failed', message));
     }
   });
 

@@ -25,7 +25,22 @@ export interface JournalSection {
   content: string;
 }
 
-export type SessionType = 'morning' | 'evening' | 'onboarding' | 'settings' | 'drop' | 'vent';
+export type SessionType =
+  | 'morning'
+  | 'evening'
+  | 'onboarding'
+  | 'settings'
+  | 'routine_setup'
+  | 'drop'
+  | 'vent';
+
+export type ConversationFlowName = 'onboarding' | 'settings' | 'routine_setup';
+
+export interface ConversationFlowState {
+  name: ConversationFlowName;
+  step: string;
+  data: Record<string, unknown>;
+}
 
 export interface ConversationState {
   userId: string;
@@ -36,6 +51,7 @@ export interface ConversationState {
   conversationHistory: ConversationMessage[];
   startedAt: Date;
   completed: boolean;
+  flow?: ConversationFlowState;
 }
 
 export interface ConversationMessage {

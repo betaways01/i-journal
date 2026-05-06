@@ -2,6 +2,8 @@ import { Context } from 'telegraf';
 import { sessionStore } from '../../state/session.store';
 import { handleCompanionMessage, startCompanionSession } from '../scenes/companion.scene';
 import { handleSettingsMessage } from '../scenes/settings.scene';
+import { handleOnboardingMessage, startOnboarding } from '../scenes/onboarding.scene';
+import { handleRoutineSetupMessage, maybeStartRoutineFromText } from '../scenes/routine.scene';
 import { registerUserFromContext } from '../userContext';
 import { getProfileForUser } from '../../db/profile.repo';
 
@@ -19,8 +21,16 @@ export async function handleMessage(ctx: Context): Promise<void> {
   const session = sessionStore.get(telegramId);
 
   if (session) {
+    if (session.sessionType === 'onboarding') {
+      await handleOnboardingMessage(ctx, telegramId, text);
+      return;
+    }
     if (session.sessionType === 'settings') {
       await handleSettingsMessage(ctx, telegramId, text);
+      return;
+    }
+    if (session.sessionType === 'routine_setup') {
+      await handleRoutineSetupMessage(ctx, telegramId, text);
       return;
     }
     await handleCompanionMessage(ctx, telegramId, text);
@@ -30,8 +40,11 @@ export async function handleMessage(ctx: Context): Promise<void> {
   const isOnboarded = userRow.onboarding_complete === 1 && Boolean(getProfileForUser(userRow.id));
 
   if (!isOnboarded) {
-    // Treat their very first message as the start of onboarding — no form, just conversation.
-    await startCompanionSession(ctx, telegramId, { mode: 'onboarding', initialUserMessage: text });
+    await startOnboarding(ctx, telegramId);
+    return;
+  }
+
+  if (await maybeStartRoutineFromText(ctx, userRow, text)) {
     return;
   }
 

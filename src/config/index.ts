@@ -84,7 +84,7 @@ export const config = {
   microsoft: {
     clientId: optionalEnv('MICROSOFT_CLIENT_ID'),
     clientSecret: optionalEnv('MICROSOFT_CLIENT_SECRET'),
-    tenantId: optionalEnv('MICROSOFT_TENANT_ID', 'consumers'),
+    tenantId: optionalEnv('MICROSOFT_TENANT_ID', 'common'),
     redirectUri: optionalEnv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback'),
     accessToken: optionalEnv('MICROSOFT_ACCESS_TOKEN'),
     refreshToken: optionalEnv('MICROSOFT_REFRESH_TOKEN'),

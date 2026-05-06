@@ -3,7 +3,9 @@ import { sessionStore } from '../../state/session.store';
 import { startMorningSession } from '../scenes/morning.scene';
 import { startEveningSession } from '../scenes/evening.scene';
 import { startCompanionSession, handleCompanionMessage } from '../scenes/companion.scene';
-import { startSettings } from '../scenes/settings.scene';
+import { startSettings, handleSettingsCallback } from '../scenes/settings.scene';
+import { handleOnboardingCallback } from '../scenes/onboarding.scene';
+import { handleRoutineSetupCallback } from '../scenes/routine.scene';
 import { registerUserFromContext } from '../userContext';
 import {
   disconnectStoredOneNoteForUser,
@@ -36,6 +38,12 @@ export function registerCallbacks(bot: Telegraf): void {
     }
 
     switch (data) {
+      default: {
+        if (await handleOnboardingCallback(ctx as unknown as Context, telegramId, data)) return;
+        if (await handleSettingsCallback(ctx as unknown as Context, telegramId, data)) return;
+        if (await handleRoutineSetupCallback(ctx as unknown as Context, telegramId, data)) return;
+        break;
+      }
       case 'start_morning': {
         if (sessionStore.has(telegramId)) {
           await ctx.reply('You already have an active session.');

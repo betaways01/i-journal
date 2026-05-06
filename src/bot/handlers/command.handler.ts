@@ -29,7 +29,7 @@ async function ensureOnboardedOrGuide(
 
   await ctx.reply(
     actionName === 'start'
-      ? "Hey. I'm your journal companion.\n\nWe'll just talk — no forms. You can use /skip anytime if you'd rather start with defaults."
+      ? "Hey. I'm your journal companion.\n\nLet's set up the basics so I can remember you properly. You can use /skip anytime if you'd rather start with defaults."
       : "Let's get acquainted first — use /start."
   );
   if (actionName === 'start') {
@@ -47,7 +47,7 @@ export function registerCommands(bot: Telegraf): void {
 
     if (userRow.onboarding_complete === 0) {
       await ctx.reply(
-        "Hey. I'm your journal companion.\n\nWe'll just talk — no forms. /skip anytime if you'd rather go with defaults."
+        "Hey. I'm your journal companion.\n\nLet's set up the basics so I can remember you properly. /skip anytime if you'd rather use defaults."
       );
       await startOnboarding(ctx, telegramId);
       return;
@@ -62,7 +62,8 @@ export function registerCommands(bot: Telegraf): void {
     await ctx.reply(
       `Hey, ${profile.name}. Good to see you.\n\n` +
         `Just message me anytime — I'll pick it up.\n\n` +
-        `Want to change anything? Tell me like you'd tell a friend — *"move morning to 7"* or *"add reading as a section"* — and I'll update it.\n\n` +
+        `Want to change anything? Use /settings for the reliable control panel.\n\n` +
+        `You can also ask for small routines, like: *"teach me a new word every morning."*\n\n` +
         `I'll also check in around *${profile.morningTime}* and *${profile.eveningTime}*.`,
       {
         parse_mode: 'Markdown',
@@ -182,7 +183,19 @@ export function registerCommands(bot: Telegraf): void {
 
       if (session?.sessionType === 'onboarding') {
         skipOnboarding(telegramId);
-        await ctx.reply('Setup skipped — using defaults. Customize anytime with /settings. 🙂');
+        await ctx.reply('Setup skipped — using defaults. Customize anytime with /settings.');
+        return;
+      }
+
+      if (session?.sessionType === 'settings') {
+        sessionStore.clear(telegramId);
+        await ctx.reply('Settings closed.');
+        return;
+      }
+
+      if (session?.sessionType === 'routine_setup') {
+        sessionStore.clear(telegramId);
+        await ctx.reply('Routine setup canceled.');
         return;
       }
 

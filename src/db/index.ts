@@ -159,4 +159,40 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE routines (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          name TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          schedule_json TEXT NOT NULL,
+          config_json TEXT,
+          next_run_at TEXT NOT NULL,
+          last_run_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_routines_due ON routines(enabled, next_run_at);
+        CREATE INDEX idx_routines_user_kind ON routines(user_id, kind);
+
+        CREATE TABLE routine_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          routine_id INTEGER NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          status TEXT NOT NULL,
+          output_summary TEXT,
+          error TEXT
+        );
+
+        CREATE INDEX idx_routine_runs_routine_started ON routine_runs(routine_id, started_at DESC);
+      `);
+    },
+  },
 ];
