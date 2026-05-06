@@ -195,4 +195,22 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE agent_workspace_docs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          doc_key TEXT NOT NULL,
+          content_markdown TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(user_id, doc_key)
+        );
+
+        CREATE INDEX idx_agent_workspace_docs_user ON agent_workspace_docs(user_id);
+      `);
+    },
+  },
 ];

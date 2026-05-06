@@ -18,6 +18,7 @@ export interface CompanionPromptInput {
   memory: MemoryContext;
   catchUpDate?: Date;
   storageSummary?: string;
+  workspaceContext?: string;
 }
 
 const CORE_PERSONA = `You are a journal companion. Not a therapist, not a coach, not a script. A friend with a good memory who keeps someone company in their own life.
@@ -209,7 +210,15 @@ export function buildCompanionPrompt(input: CompanionPromptInput): {
   volatileContext: string;
 } {
   const cacheableCore = [CORE_PERSONA, ENTRY_COMPILATION].join('\n\n');
-  const volatileContext = [systemFactsBlock(input), memoryBlock(input.memory), modeBlock(input)].join('\n\n');
+  const workspace = input.workspaceContext
+    ? `AGENT WORKSPACE CONTEXT\n${input.workspaceContext}`
+    : '';
+  const volatileContext = [
+    systemFactsBlock(input),
+    workspace,
+    memoryBlock(input.memory),
+    modeBlock(input),
+  ].filter(Boolean).join('\n\n');
 
   return {
     system: cacheableCore + '\n\n' + volatileContext,

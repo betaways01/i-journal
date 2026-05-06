@@ -1,5 +1,6 @@
 import { Profile } from '../profile/defaults';
 import { RoutineRecord, SkillRunResult } from './types';
+import { sendMessage } from '../ai';
 
 interface WordItem {
   word: string;
@@ -86,12 +87,40 @@ function runWordOfDay(routine: RoutineRecord, profile: Profile): SkillRunResult 
   };
 }
 
-export function runRoutineSkill(params: {
+async function runCustomPrompt(routine: RoutineRecord, profile: Profile): Promise<SkillRunResult> {
+  const prompt = typeof routine.config.prompt === 'string'
+    ? routine.config.prompt
+    : typeof routine.config.goal === 'string'
+      ? routine.config.goal
+      : routine.name;
+
+  const system = `You are i-Journal running a user-confirmed recurring routine.
+
+Write one short Telegram message for ${profile.name}.
+Be useful, warm, and specific. Do not claim you did anything outside the app.
+
+Routine name: ${routine.name}
+Routine instruction: ${prompt}
+User areas: ${profile.sections.map((s) => s.title).join(', ')}
+Timezone: ${profile.timezone}`;
+
+  const message = await sendMessage(system, [], 'Generate this routine message now.');
+  return {
+    messages: [message.trim()],
+    outputSummary: routine.name,
+  };
+}
+
+export async function runRoutineSkill(params: {
   routine: RoutineRecord;
   profile: Profile;
-}): SkillRunResult {
+}): Promise<SkillRunResult> {
   if (params.routine.kind === 'learning.word_of_day') {
     return runWordOfDay(params.routine, params.profile);
+  }
+
+  if (params.routine.kind === 'agent.custom_prompt') {
+    return runCustomPrompt(params.routine, params.profile);
   }
 
   throw new Error(`No skill registered for routine kind: ${params.routine.kind}`);

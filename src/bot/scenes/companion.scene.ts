@@ -25,6 +25,10 @@ import { normalizeProfile, getDefaultProfile, Profile } from '../../profile/defa
 import { config } from '../../config';
 import { reloadScheduler } from '../../scheduler';
 import { POST_SAVE_ACTIONS, DROP_INLINE_ACTIONS } from '../keyboards';
+import {
+  ensureAgentWorkspaceForUser,
+  renderWorkspaceContext,
+} from '../../agent/workspace';
 
 const PROFILE_MARKER = '[PROFILE_COMPLETE]';
 const SETTINGS_MARKER = '[SETTINGS_UPDATE]';
@@ -163,6 +167,11 @@ async function buildSystemFor(
       ? 'Entries save first to the private SQLite database. OneNote backup/sync is connected for this account.'
       : 'Entries save first to the private SQLite database. OneNote backup is optional and not connected for this account.'
     : 'During setup, no journal entries are saved yet. After setup, entries save first to the private SQLite database.';
+  const workspaceContext = botUser
+    ? (ensureAgentWorkspaceForUser(botUser.row), renderWorkspaceContext(botUser.row.id, {
+        includeBootstrap: botUser.row.onboarding_complete === 0,
+      }))
+    : undefined;
 
   const { cacheableCore, volatileContext } = buildCompanionPrompt({
     profile: botUser?.profile ?? null,
@@ -171,6 +180,7 @@ async function buildSystemFor(
     memory,
     catchUpDate,
     storageSummary,
+    workspaceContext,
   });
   return { cacheableCore, volatileContext };
 }

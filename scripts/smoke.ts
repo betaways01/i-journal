@@ -59,6 +59,15 @@ const {
   runRoutineSkill,
 } = require('../src/routines/skills') as typeof import('../src/routines/skills');
 const {
+  normalizeBootstrapUnderstanding,
+  mergeBootstrapPatch,
+} = require('../src/agent/bootstrap') as typeof import('../src/agent/bootstrap');
+const {
+  emptyBootstrapDraft,
+  ensureAgentWorkspaceForUser,
+  renderWorkspaceContext,
+} = require('../src/agent/workspace') as typeof import('../src/agent/workspace');
+const {
   parseName,
   parseAreaSections,
   parseTwoTimes,
@@ -110,9 +119,10 @@ async function run(): Promise<void> {
   assert(tableNames.includes('storage_connections'), 'storage_connections table exists');
   assert(tableNames.includes('routines'), 'routines table exists (v3)');
   assert(tableNames.includes('routine_runs'), 'routine_runs table exists (v3)');
+  assert(tableNames.includes('agent_workspace_docs'), 'agent workspace docs table exists (v4)');
 
   const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-  assert(versions.v >= 3, `schema at v${versions.v} (≥ 3)`);
+  assert(versions.v >= 4, `schema at v${versions.v} (≥ 4)`);
 
   section('User + profile roundtrip');
   const userRow = upsertUser({ telegramId: 'smoke-user-1', firstName: 'TestUser', isOwner: true });
@@ -245,6 +255,59 @@ async function run(): Promise<void> {
   assert(setupProfile.onboardingComplete === true, 'setup profile marks onboarding complete');
   assert(setupProfile.sections[1].title === 'God', 'setup profile preserves God area');
 
+  section('OpenClaw-style workspace + bootstrap understanding');
+  ensureAgentWorkspaceForUser(userRow);
+  const workspaceContext = renderWorkspaceContext(userRow.id, { includeBootstrap: true });
+  assert(workspaceContext.includes('SOUL.md'), 'workspace context includes SOUL.md');
+  assert(workspaceContext.includes('USER.md'), 'workspace context includes USER.md');
+  assert(workspaceContext.includes('BOOTSTRAP.md'), 'workspace context includes BOOTSTRAP.md');
+
+  const identityUnderstanding = normalizeBootstrapUnderstanding({
+    assistantReply: "Got it. I'll call you King Kang and remember Francis as another name you use.",
+    patch: {
+      userIdentity: {
+        preferredName: 'King Kang',
+        aliases: ['Francis'],
+        rawMentions: ['King Kang, or sometime Francis'],
+      },
+    },
+    confidence: 0.72,
+    needsConfirmation: true,
+    readyToComplete: false,
+    missing: ['areas', 'times'],
+  });
+  let draft = mergeBootstrapPatch(emptyBootstrapDraft(), identityUnderstanding.patch, 'King Kang, or sometime Francis');
+  assert(draft.userIdentity.preferredName === 'King Kang', 'bootstrap extracts preferred name');
+  assert(draft.userIdentity.aliases.includes('Francis'), 'bootstrap stores Francis as alias');
+
+  const timesUnderstanding = normalizeBootstrapUnderstanding({
+    assistantReply: 'I have morning 09:30 and evening 20:30.',
+    patch: {
+      morningTime: '9.30',
+      eveningTime: '8.30 evening',
+    },
+    confidence: 0.9,
+    needsConfirmation: true,
+    readyToComplete: false,
+    missing: [],
+  });
+  draft = mergeBootstrapPatch(draft, timesUnderstanding.patch, 'Morning at 9.30 Evening at 8.30');
+  assert(draft.morningTime === '09:30', `bootstrap accepts dotted morning time (got ${draft.morningTime})`);
+  assert(draft.eveningTime === '20:30', `bootstrap accepts natural evening time (got ${draft.eveningTime})`);
+
+  const agentNameUnderstanding = normalizeBootstrapUnderstanding({
+    assistantReply: 'Nia can be the companion name.',
+    patch: {
+      agentIdentity: { name: 'Nia' },
+    },
+    confidence: 0.95,
+    needsConfirmation: false,
+    readyToComplete: false,
+    missing: [],
+  });
+  draft = mergeBootstrapPatch(draft, agentNameUnderstanding.patch, 'Call yourself Nia');
+  assert(draft.agentIdentity.name === 'Nia', 'bootstrap distinguishes agent name from user name');
+
   section('Reminder scheduling + due filter');
   const past = new Date(Date.now() - 60_000);
   const future = new Date(Date.now() + 10 * 60_000);
@@ -287,7 +350,7 @@ async function run(): Promise<void> {
   assert(foundRoutine?.id === routine.id, 'routine can be found by user + kind');
   const dueRoutines = getDueRoutines(new Date());
   assert(dueRoutines.some((r) => r.id === routine.id), 'due routine is returned by sweeper query');
-  const skillResult = runRoutineSkill({ routine, profile: loaded! });
+  const skillResult = await runRoutineSkill({ routine, profile: loaded! });
   assert(skillResult.messages[0].includes('Word for today'), 'word-of-day skill creates Telegram message');
   assert(typeof skillResult.configUpdate?.lastWordIndex === 'number', 'word-of-day skill advances cursor');
   const runId = startRoutineRun(routine);

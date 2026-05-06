@@ -47,7 +47,7 @@ async function executeRoutine(bot: Telegraf, routine: RoutineRecord): Promise<vo
       return;
     }
 
-    const result = runRoutineSkill({ routine, profile });
+    const result = await runRoutineSkill({ routine, profile });
     for (const message of result.messages) {
       await bot.telegram.sendMessage(user.telegram_id, message);
     }

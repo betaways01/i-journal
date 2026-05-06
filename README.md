@@ -10,6 +10,7 @@ An AI-powered daily journaling bot on Telegram. It guides you through structured
 - **Local-first storage** — Every compiled entry is saved to SQLite first. OneNote sync is best-effort; a failed sync never loses your journal.
 - **Multi-user** — Anyone can `/start` the bot and set up their own profile, schedule, and sections. Each user has their own independent journal state.
 - **Routine engine** — Lightweight DB-backed routines can run helpful recurring actions, starting with a daily conversation word.
+- **Agent workspace** — Each user gets OpenClaw-style workspace docs in SQLite (`SOUL.md`, `USER.md`, `IDENTITY.md`, etc.) so setup and future sessions can stay adaptive without becoming arbitrary.
 - **Inline button prompts** — Scheduled check-ins arrive with Start / Remind later / Catch up / Skip buttons.
 
 ### Commands
@@ -108,7 +109,9 @@ src/
 │   ├── sessions.repo.ts     # Persistent active sessions
 │   ├── entries.repo.ts      # Compiled journal entries (local source of truth)
 │   ├── routines.repo.ts     # DB-backed recurring routines + run history
+│   ├── agentWorkspace.repo.ts # OpenClaw-style workspace docs in SQLite
 │   └── legacy.migrate.ts    # One-time JSON → SQLite import
+├── agent/                   # Workspace docs + LLM bootstrap understanding
 ├── profile/
 │   └── defaults.ts          # Profile type, default template, normalization
 ├── bot/

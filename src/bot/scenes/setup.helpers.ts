@@ -104,21 +104,18 @@ export function parseAreaSections(text: string): ProfileSection[] {
   return sections.slice(0, 8);
 }
 
-export function parseTime(text: string): string | null {
-  const trimmed = text.trim().toLowerCase();
-  const match = trimmed.match(/\b(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?\b/);
-  if (!match) return null;
-
-  let hour = Number.parseInt(match[1], 10);
-  const minute = match[2] ? Number.parseInt(match[2], 10) : 0;
-  const meridiem = match[3];
-
+function normalizeTime(hourRaw: number, minute: number, context: string, assumeEvening = false): string | null {
+  let hour = hourRaw;
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
   if (minute < 0 || minute > 59) return null;
 
-  if (meridiem === 'am') {
+  const lower = context.toLowerCase();
+  const isMorning = /\b(am|morning|dawn)\b/.test(lower);
+  const isEvening = assumeEvening || /\b(pm|evening|night|tonight|journal)\b/.test(lower);
+
+  if (isMorning) {
     if (hour === 12) hour = 0;
-  } else if (meridiem === 'pm') {
+  } else if (isEvening) {
     if (hour < 12) hour += 12;
   }
 
@@ -126,14 +123,38 @@ export function parseTime(text: string): string | null {
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
+export function parseTime(text: string): string | null {
+  const trimmed = text.trim().toLowerCase();
+  const match = trimmed.match(/\b(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?\b/);
+  if (!match) return null;
+
+  const hour = Number.parseInt(match[1], 10);
+  const minute = match[2] ? Number.parseInt(match[2], 10) : 0;
+  return normalizeTime(hour, minute, trimmed);
+}
+
 export function parseTwoTimes(text: string): { morningTime: string; eveningTime: string } | null {
   const matches = Array.from(
-    text.toLowerCase().matchAll(/\b(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?\b/g)
+    text.toLowerCase().matchAll(/\b(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?\b/g)
   );
   if (matches.length < 2) return null;
 
-  const first = parseTime(matches[0][0]);
-  const second = parseTime(matches[1][0]);
+  const contextFor = (match: RegExpMatchArray): string => {
+    const index = match.index ?? 0;
+    return text.slice(Math.max(0, index - 24), Math.min(text.length, index + match[0].length + 24));
+  };
+
+  const first = normalizeTime(
+    Number.parseInt(matches[0][1], 10),
+    matches[0][2] ? Number.parseInt(matches[0][2], 10) : 0,
+    contextFor(matches[0])
+  );
+  const second = normalizeTime(
+    Number.parseInt(matches[1][1], 10),
+    matches[1][2] ? Number.parseInt(matches[1][2], 10) : 0,
+    contextFor(matches[1]),
+    true
+  );
   if (!first || !second) return null;
   return { morningTime: first, eveningTime: second };
 }

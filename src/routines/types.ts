@@ -1,4 +1,4 @@
-export type RoutineKind = 'learning.word_of_day';
+export type RoutineKind = 'learning.word_of_day' | 'agent.custom_prompt';
 
 export interface DailyRoutineSchedule {
   type: 'daily';
