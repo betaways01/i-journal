@@ -101,10 +101,6 @@ function setBootstrapState(
   sessionStore.set(userId, onboardingState(userId, { draft, ...opts }));
 }
 
-function hasTimes(draft: BootstrapDraft): boolean {
-  return Boolean(draft.morningTime && draft.eveningTime);
-}
-
 function finalSummary(draft: BootstrapDraft): string {
   const name = preferredName(draft.userIdentity);
   const areas = draft.areas.length > 0 ? draft.areas : defaultAreaSections();
@@ -267,10 +263,6 @@ export async function handleOnboardingMessage(ctx: Context, userId: string, text
     if (enough && (result.readyToComplete || result.missing.length === 0)) {
       await showFinalConfirmation(ctx, userId, merged);
       return;
-    }
-
-    if (!hasTimes(merged) && result.missing.includes('times')) {
-      await ctx.reply('You can give times however you normally would, like "morning 9.30, evening 8.30".');
     }
   } catch (error) {
     console.error('[Onboarding] bootstrap understanding failed:', error);

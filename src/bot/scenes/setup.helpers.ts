@@ -24,6 +24,8 @@ const EMOJI_BY_KEY: Record<string, string> = {
   church: '⛪',
   ministry: '⛪',
   personal: '🌱',
+  personal_life: '🌱',
+  personal_growth: '🌱',
   health: '💪',
   fitness: '💪',
   study: '📚',
@@ -96,7 +98,7 @@ export function parseAreaSections(text: string): ProfileSection[] {
     seen.add(key);
     sections.push({
       key,
-      emoji: EMOJI_BY_KEY[key] ?? '•',
+      emoji: EMOJI_BY_KEY[key] ?? '📝',
       title,
     });
   }

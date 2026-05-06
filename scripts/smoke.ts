@@ -243,6 +243,7 @@ async function run(): Promise<void> {
   const areas = parseAreaSections('Family, God, Personal Life');
   assert(areas.length === 3, `area parser returns 3 areas (got ${areas.length})`);
   assert(areas[0].title === 'Family', `first area title is Family (got ${areas[0].title})`);
+  assert(areas[2].emoji !== '•', 'custom area emoji does not double-render as a bullet');
   const parsedTimes = parseTwoTimes('06:30 and 21:30');
   assert(parsedTimes?.morningTime === '06:30', `morning time parsed (got ${parsedTimes?.morningTime})`);
   assert(parsedTimes?.eveningTime === '21:30', `evening time parsed (got ${parsedTimes?.eveningTime})`);
