@@ -41,8 +41,9 @@ async function main(): Promise<void> {
     const maxAttempts = 6;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        await bot.launch();
-        markStarted();
+        await bot.launch(() => {
+          markStarted();
+        });
         return;
       } catch (error) {
         if (!isTelegramPollingConflict(error) || attempt === maxAttempts) {
