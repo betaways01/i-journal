@@ -6,6 +6,19 @@ const DEFAULT_DB_PATH = path.join(__dirname, '../../data/i-journal.db');
 
 let dbInstance: Database.Database | null = null;
 
+function resolveDbPath(): string {
+  const explicitPath = process.env.DB_PATH;
+  if (explicitPath) return explicitPath;
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'Production requires DB_PATH to point at persistent storage. On Railway, mount a volume and set DB_PATH=/data/i-journal.db.'
+    );
+  }
+
+  return DEFAULT_DB_PATH;
+}
+
 function ensureParentDir(filePath: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
@@ -16,7 +29,7 @@ function ensureParentDir(filePath: string): void {
 export function getDb(): Database.Database {
   if (dbInstance) return dbInstance;
 
-  const dbPath = process.env.DB_PATH || DEFAULT_DB_PATH;
+  const dbPath = resolveDbPath();
   ensureParentDir(dbPath);
 
   const db = new Database(dbPath);
