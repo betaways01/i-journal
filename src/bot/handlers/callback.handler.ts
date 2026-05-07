@@ -5,7 +5,7 @@ import { startEveningSession } from '../scenes/evening.scene';
 import { startCompanionSession, handleCompanionMessage } from '../scenes/companion.scene';
 import { startSettings, handleSettingsCallback } from '../scenes/settings.scene';
 import { handleOnboardingCallback } from '../scenes/onboarding.scene';
-import { handleRoutineSetupCallback } from '../scenes/routine.scene';
+import { handleAutomationSetupCallback } from '../scenes/automation.scene';
 import { registerUserFromContext } from '../userContext';
 import {
   disconnectStoredOneNoteForUser,
@@ -41,7 +41,12 @@ export function registerCallbacks(bot: Telegraf): void {
       default: {
         if (await handleOnboardingCallback(ctx as unknown as Context, telegramId, data)) return;
         if (await handleSettingsCallback(ctx as unknown as Context, telegramId, data)) return;
-        if (await handleRoutineSetupCallback(ctx as unknown as Context, telegramId, data)) return;
+        if (await handleAutomationSetupCallback(ctx as unknown as Context, telegramId, data)) return;
+        if (data.startsWith('routine_')) {
+          sessionStore.clear(telegramId);
+          await ctx.reply('That setup flow was upgraded. Use Add automation in Settings, or just tell me what you want automated.');
+          return;
+        }
         break;
       }
       case 'start_morning': {
@@ -84,6 +89,7 @@ export function registerCallbacks(bot: Telegraf): void {
           userId: userForReminder.id,
           kind,
           fireAt,
+          replaceExisting: true,
         });
         await ctx.reply(`No problem — I'll check in again in ${REMIND_LATER_MINUTES} minutes.`);
         return;

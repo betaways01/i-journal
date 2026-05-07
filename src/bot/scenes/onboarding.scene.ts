@@ -32,6 +32,7 @@ import { BootstrapDraft } from '../../agent/types';
 import {
   createRoutine,
   findRoutineForUserByKind,
+  findRoutineForUserByKindAndName,
   updateRoutine,
 } from '../../db/routines.repo';
 import { computeNextRunAt } from '../../routines/schedule';
@@ -176,7 +177,9 @@ function upsertBootstrapRoutines(userId: number, draft: BootstrapDraft, timezone
       goal: proposal.goal,
       prompt: proposal.prompt,
     };
-    const existing = findRoutineForUserByKind(userId, proposal.kind);
+    const existing = proposal.kind === 'agent.custom_prompt'
+      ? findRoutineForUserByKindAndName(userId, proposal.kind, proposal.name)
+      : findRoutineForUserByKind(userId, proposal.kind);
     if (existing) {
       updateRoutine(existing.id, {
         name: proposal.name,

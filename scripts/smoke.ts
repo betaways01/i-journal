@@ -372,6 +372,22 @@ async function run(): Promise<void> {
     .prepare("SELECT COUNT(*) AS c FROM pending_reminders WHERE user_id = ? AND kind = 'evening_remind_later'")
     .get(userRow.id) as { c: number };
   assert(remindersOfKind.c === 1, `only one evening reminder per user (got ${remindersOfKind.c})`);
+  scheduleReminder({
+    userId: userRow.id,
+    kind: 'agent.custom_reminder',
+    fireAt: future,
+    payload: { message: 'Call Alex' },
+  });
+  scheduleReminder({
+    userId: userRow.id,
+    kind: 'agent.custom_reminder',
+    fireAt: future,
+    payload: { message: 'Drink water' },
+  });
+  const customReminderCount = db
+    .prepare("SELECT COUNT(*) AS c FROM pending_reminders WHERE user_id = ? AND kind = 'agent.custom_reminder'")
+    .get(userRow.id) as { c: number };
+  assert(customReminderCount.c === 2, `custom reminders can coexist (got ${customReminderCount.c})`);
 
   section('Routine schedule + word-of-day skill');
   const schedule = { type: 'daily' as const, time: '06:30', timezone: 'Africa/Nairobi' };

@@ -1,4 +1,3 @@
-import { InlineKeyboardButton } from 'telegraf/types';
 import { getDefaultProfile, Profile, ProfileSection } from '../../profile/defaults';
 import { config } from '../../config';
 
@@ -197,19 +196,4 @@ export function formatProfileCard(profile: Profile): string {
     '',
     'Entries save to the private app database first. OneNote backup is optional from /storage.',
   ].join('\n');
-}
-
-export function settingsMenuKeyboard(): InlineKeyboardButton[][] {
-  return [
-    [
-      { text: 'Name', callback_data: 'settings_name' },
-      { text: 'Areas', callback_data: 'settings_areas' },
-    ],
-    [
-      { text: 'Morning time', callback_data: 'settings_morning' },
-      { text: 'Evening time', callback_data: 'settings_evening' },
-    ],
-    [{ text: 'Daily word routine', callback_data: 'settings_word' }],
-    [{ text: 'Done', callback_data: 'settings_done' }],
-  ];
 }

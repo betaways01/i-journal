@@ -1,6 +1,9 @@
 import { getDb } from './index';
 
-export type ReminderKind = 'evening_remind_later' | 'morning_remind_later';
+export type ReminderKind =
+  | 'evening_remind_later'
+  | 'morning_remind_later'
+  | 'agent.custom_reminder';
 
 export interface PendingReminder {
   id: number;
@@ -16,15 +19,18 @@ export function scheduleReminder(params: {
   kind: ReminderKind;
   fireAt: Date;
   payload?: Record<string, unknown>;
+  replaceExisting?: boolean;
 }): number {
   const db = getDb();
   const now = new Date().toISOString();
 
-  // Replace any prior reminder of the same kind for this user — one pending per kind.
-  db.prepare('DELETE FROM pending_reminders WHERE user_id = ? AND kind = ?').run(
-    params.userId,
-    params.kind
-  );
+  const replaceExisting = params.replaceExisting ?? params.kind !== 'agent.custom_reminder';
+  if (replaceExisting) {
+    db.prepare('DELETE FROM pending_reminders WHERE user_id = ? AND kind = ?').run(
+      params.userId,
+      params.kind
+    );
+  }
 
   const result = db
     .prepare(
@@ -50,6 +56,21 @@ export function getDueReminders(now: Date): PendingReminder[] {
       `SELECT * FROM pending_reminders WHERE fire_at <= ? ORDER BY fire_at ASC LIMIT 50`
     )
     .all(now.toISOString()) as PendingReminder[];
+}
+
+export function listRemindersForUser(userId: number): PendingReminder[] {
+  const db = getDb();
+  return db
+    .prepare('SELECT * FROM pending_reminders WHERE user_id = ? ORDER BY fire_at ASC')
+    .all(userId) as PendingReminder[];
+}
+
+export function getReminderById(reminderId: number): PendingReminder | null {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM pending_reminders WHERE id = ?').get(reminderId) as
+    | PendingReminder
+    | undefined;
+  return row ?? null;
 }
 
 export function deleteReminder(id: number): void {

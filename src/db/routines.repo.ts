@@ -70,6 +70,23 @@ export function findRoutineForUserByKind(userId: number, kind: RoutineKind): Rou
   return row ? rowToRoutine(row) : null;
 }
 
+export function findRoutineForUserByKindAndName(
+  userId: number,
+  kind: RoutineKind,
+  name: string
+): RoutineRecord | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT * FROM routines
+       WHERE user_id = ? AND kind = ? AND lower(name) = lower(?)
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(userId, kind, name) as RoutineRow | undefined;
+  return row ? rowToRoutine(row) : null;
+}
+
 export function listRoutinesForUser(userId: number): RoutineRecord[] {
   const db = getDb();
   return db

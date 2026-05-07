@@ -128,7 +128,7 @@ function normalizeRoutine(raw: unknown): BootstrapRoutineProposal | null {
     name,
     time: safeTime(obj.time),
     goal: safeString(obj.goal),
-    prompt: safeString(obj.prompt),
+    prompt: safeString(obj.prompt, 500),
   };
 }
 
@@ -272,7 +272,7 @@ const BOOTSTRAP_SCHEMA = `Return ONLY valid JSON with this shape:
     "eveningTime": "HH:MM if stated or inferable",
     "routineProposals": [
       {
-        "kind": "learning.word_of_day or agent.custom_prompt",
+        "kind": "agent.custom_prompt for almost every user-specific routine; learning.word_of_day only for an exact word-of-day request",
         "name": "routine name",
         "time": "HH:MM if stated",
         "goal": "why they want it",
@@ -314,6 +314,8 @@ Critical behavior:
 - Do not rush setup. If the user gives rich life details, warmly acknowledge and leave space for more: they may add more areas, people, rhythms, routines, or start.
 - If enough setup facts are known, set readyToComplete true and make assistantReply a warm confirmation invitation.
 - Missing should only include fields still truly needed: identity, areas, times.
+- Treat user-specific recurring wishes as routineProposals. Examples: motivation, scripture, business review, habit check, prayer nudge, language practice, family prompt.
+- Prefer kind "agent.custom_prompt" so the runtime can adapt to the user's wording instead of relying on hardcoded routine buttons.
 
 Workspace context:
 ${params.workspaceContext}

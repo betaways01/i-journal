@@ -3,7 +3,7 @@ import { sessionStore } from '../../state/session.store';
 import { handleCompanionMessage, startCompanionSession } from '../scenes/companion.scene';
 import { handleSettingsMessage } from '../scenes/settings.scene';
 import { handleOnboardingMessage, startOnboarding } from '../scenes/onboarding.scene';
-import { handleRoutineSetupMessage, maybeStartRoutineFromText } from '../scenes/routine.scene';
+import { handleAutomationSetupMessage, maybeStartAutomationFromText } from '../scenes/automation.scene';
 import { registerUserFromContext } from '../userContext';
 import { getProfileForUser } from '../../db/profile.repo';
 
@@ -51,8 +51,13 @@ export async function handleMessage(ctx: Context): Promise<void> {
       await handleSettingsMessage(ctx, telegramId, text);
       return;
     }
+    if (session.sessionType === 'automation_setup') {
+      await handleAutomationSetupMessage(ctx, telegramId, text);
+      return;
+    }
     if (session.sessionType === 'routine_setup') {
-      await handleRoutineSetupMessage(ctx, telegramId, text);
+      sessionStore.clear(telegramId);
+      await ctx.reply('That setup flow was upgraded. Tell me the automation you want again, with timing.');
       return;
     }
     await handleCompanionMessage(ctx, telegramId, text);
@@ -66,7 +71,7 @@ export async function handleMessage(ctx: Context): Promise<void> {
     return;
   }
 
-  if (await maybeStartRoutineFromText(ctx, userRow, text)) {
+  if (await maybeStartAutomationFromText(ctx, userRow, text)) {
     return;
   }
 

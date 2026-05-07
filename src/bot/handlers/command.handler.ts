@@ -14,6 +14,7 @@ import { startEveningSession } from '../scenes/evening.scene';
 import { startOnboarding, skipOnboarding } from '../scenes/onboarding.scene';
 import { startSettings } from '../scenes/settings.scene';
 import { startCompanionSession } from '../scenes/companion.scene';
+import { startAutomationCapture } from '../scenes/automation.scene';
 import { registerUserFromContext, loadBotUser } from '../userContext';
 import { hasMicrosoftOAuthConfigured } from '../../config';
 import { buildMicrosoftAuthUrlForUser } from '../../onenote/auth';
@@ -63,7 +64,7 @@ export function registerCommands(bot: Telegraf): void {
       `Hey, ${profile.name}. Good to see you.\n\n` +
         `Just message me anytime — I'll pick it up.\n\n` +
         `Want to change anything? Use /settings for the reliable control panel.\n\n` +
-        `You can also ask for small routines, like: *"teach me a new word every morning."*\n\n` +
+        `You can also ask for automations, like: *"remind me in 20 minutes to call Alex"* or *"send motivation every morning."*\n\n` +
         `I'll also check in around *${profile.morningTime}* and *${profile.eveningTime}*.`,
       {
         parse_mode: 'Markdown',
@@ -173,6 +174,19 @@ export function registerCommands(bot: Telegraf): void {
     await startSettings(ctx, telegramId);
   });
 
+  bot.command('automate', async (ctx) => {
+    const userRow = registerUserFromContext(ctx);
+    if (!userRow) return;
+    if (!(await ensureOnboardedOrGuide(ctx, userRow, 'automate'))) return;
+
+    const telegramId = userRow.telegram_id;
+    if (sessionStore.has(telegramId)) {
+      await ctx.reply('You have an active session. Finish or /skip it first.');
+      return;
+    }
+    await startAutomationCapture(ctx, telegramId);
+  });
+
   bot.command('skip', async (ctx) => {
     const userRow = registerUserFromContext(ctx);
     if (!userRow) return;
@@ -193,9 +207,9 @@ export function registerCommands(bot: Telegraf): void {
         return;
       }
 
-      if (session?.sessionType === 'routine_setup') {
+      if (session?.sessionType === 'routine_setup' || session?.sessionType === 'automation_setup') {
         sessionStore.clear(telegramId);
-        await ctx.reply('Routine setup canceled.');
+        await ctx.reply('Automation setup canceled.');
         return;
       }
 

@@ -1,6 +1,6 @@
 import { RoutineSchedule } from './types';
 
-function getZonedParts(date: Date, timezone: string): {
+export function getZonedParts(date: Date, timezone: string): {
   year: number;
   month: number;
   day: number;
@@ -47,7 +47,7 @@ function getTimezoneOffsetMs(date: Date, timezone: string): number {
   return asUtc - date.getTime();
 }
 
-function zonedTimeToUtc(params: {
+export function zonedTimeToUtc(params: {
   year: number;
   month: number;
   day: number;
@@ -74,7 +74,15 @@ function nextLocalDate(parts: { year: number; month: number; day: number }): {
 }
 
 export function computeNextRunAt(schedule: RoutineSchedule, after: Date): Date {
-  if (schedule.type !== 'daily') {
+  if (schedule.type === 'interval') {
+    const minutes = Number.isInteger(schedule.everyMinutes) ? schedule.everyMinutes : 0;
+    if (minutes < 1) {
+      throw new Error(`Invalid interval routine minutes: ${schedule.everyMinutes}`);
+    }
+    return new Date(after.getTime() + minutes * 60 * 1000);
+  }
+
+  if (schedule.type !== 'daily' && schedule.type !== 'weekly') {
     throw new Error(`Unsupported schedule type: ${(schedule as { type: string }).type}`);
   }
 
@@ -86,17 +94,49 @@ export function computeNextRunAt(schedule: RoutineSchedule, after: Date): Date {
   }
 
   const local = getZonedParts(after, schedule.timezone);
-  let candidate = zonedTimeToUtc({
+  let localDate = {
     year: local.year,
     month: local.month,
     day: local.day,
+  };
+
+  if (schedule.type === 'weekly') {
+    const targetDay = schedule.dayOfWeek;
+    if (!Number.isInteger(targetDay) || targetDay < 0 || targetDay > 6) {
+      throw new Error(`Invalid weekly routine day: ${targetDay}`);
+    }
+
+    const currentLocalNoon = new Date(Date.UTC(local.year, local.month - 1, local.day, 12, 0, 0));
+    const currentDay = currentLocalNoon.getUTCDay();
+    const deltaDays = (targetDay - currentDay + 7) % 7;
+    const targetLocalNoon = new Date(
+      Date.UTC(local.year, local.month - 1, local.day + deltaDays, 12, 0, 0)
+    );
+    localDate = {
+      year: targetLocalNoon.getUTCFullYear(),
+      month: targetLocalNoon.getUTCMonth() + 1,
+      day: targetLocalNoon.getUTCDate(),
+    };
+  }
+
+  let candidate = zonedTimeToUtc({
+    ...localDate,
     hour,
     minute,
     timezone: schedule.timezone,
   });
 
   if (candidate.getTime() <= after.getTime() + 1000) {
-    const next = nextLocalDate(local);
+    const next = schedule.type === 'weekly'
+      ? (() => {
+          const nextWeekly = new Date(Date.UTC(localDate.year, localDate.month - 1, localDate.day + 7, 12, 0, 0));
+          return {
+            year: nextWeekly.getUTCFullYear(),
+            month: nextWeekly.getUTCMonth() + 1,
+            day: nextWeekly.getUTCDate(),
+          };
+        })()
+      : nextLocalDate(local);
     candidate = zonedTimeToUtc({
       ...next,
       hour,

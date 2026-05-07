@@ -6,7 +6,20 @@ export interface DailyRoutineSchedule {
   timezone: string;
 }
 
-export type RoutineSchedule = DailyRoutineSchedule;
+export interface WeeklyRoutineSchedule {
+  type: 'weekly';
+  dayOfWeek: number;
+  time: string;
+  timezone: string;
+}
+
+export interface IntervalRoutineSchedule {
+  type: 'interval';
+  everyMinutes: number;
+  timezone: string;
+}
+
+export type RoutineSchedule = DailyRoutineSchedule | WeeklyRoutineSchedule | IntervalRoutineSchedule;
 
 export interface RoutineRecord {
   id: number;

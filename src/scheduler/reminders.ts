@@ -9,6 +9,15 @@ const SWEEP_INTERVAL_MS = 30_000;
 
 let intervalHandle: NodeJS.Timeout | null = null;
 
+function reminderPayload(reminder: PendingReminder): Record<string, unknown> {
+  if (!reminder.payload_json) return {};
+  try {
+    return JSON.parse(reminder.payload_json) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
 async function fireReminder(bot: Telegraf, reminder: PendingReminder): Promise<void> {
   const users = listOnboardedUsers();
   const userRow = users.find((u) => u.id === reminder.user_id);
@@ -25,7 +34,22 @@ async function fireReminder(bot: Telegraf, reminder: PendingReminder): Promise<v
 
   const telegramId = userRow.telegram_id;
 
-  // If a session is already active or today's slot is done, drop the reminder silently.
+  if (reminder.kind === 'agent.custom_reminder') {
+    const payload = reminderPayload(reminder);
+    const message = typeof payload.message === 'string' && payload.message.trim()
+      ? payload.message.trim()
+      : 'Reminder';
+    try {
+      await bot.telegram.sendMessage(telegramId, message);
+    } catch (err) {
+      console.error('[Reminders] custom reminder failed:', err);
+    } finally {
+      deleteReminder(reminder.id);
+    }
+    return;
+  }
+
+  // If a journal session is already active or today's slot is done, drop the built-in nudge silently.
   if (sessionStore.has(telegramId)) {
     deleteReminder(reminder.id);
     return;

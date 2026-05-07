@@ -31,10 +31,16 @@ export type SessionType =
   | 'onboarding'
   | 'settings'
   | 'routine_setup'
+  | 'automation_setup'
   | 'drop'
   | 'vent';
 
-export type ConversationFlowName = 'onboarding' | 'settings' | 'routine_setup' | 'agent_action';
+export type ConversationFlowName =
+  | 'onboarding'
+  | 'settings'
+  | 'routine_setup'
+  | 'automation_setup'
+  | 'agent_action';
 
 export interface ConversationFlowState {
   name: ConversationFlowName;
