@@ -1,5 +1,5 @@
 import { getDb } from './index';
-import { ConversationState } from '../types';
+import { ConversationState, SessionType } from '../types';
 
 interface Row {
   user_id: number;
@@ -18,10 +18,44 @@ function rowToState(row: Row): ConversationState {
   } as ConversationState;
 }
 
+const SESSION_TTL_HOURS: Record<SessionType, number> = {
+  morning: 24,
+  evening: 24,
+  drop: 24,
+  vent: 24,
+  settings: 72,
+  automation_setup: 72,
+  routine_setup: 72,
+  onboarding: 168,
+};
+
+function ttlHoursForSessionType(sessionType: string): number {
+  return SESSION_TTL_HOURS[sessionType as SessionType] ?? 24;
+}
+
+function rowIsStale(row: Row, now = new Date()): boolean {
+  const startedMs = new Date(row.started_at).getTime();
+  if (!Number.isFinite(startedMs)) return true;
+  const ttlMs = ttlHoursForSessionType(row.session_type) * 60 * 60 * 1000;
+  return now.getTime() - startedMs > ttlMs;
+}
+
+export function isSessionStale(state: ConversationState, now = new Date()): boolean {
+  const startedMs = state.startedAt.getTime();
+  if (!Number.isFinite(startedMs)) return true;
+  const ttlMs = ttlHoursForSessionType(state.sessionType) * 60 * 60 * 1000;
+  return now.getTime() - startedMs > ttlMs;
+}
+
 export function getSessionForUser(userId: number): ConversationState | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM sessions WHERE user_id = ?').get(userId) as Row | undefined;
-  return row ? rowToState(row) : null;
+  if (!row) return null;
+  if (rowIsStale(row)) {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    return null;
+  }
+  return rowToState(row);
 }
 
 export function setSessionForUser(
@@ -60,21 +94,23 @@ export function clearSessionForUser(userId: number): void {
 
 export function hasSessionForUser(userId: number): boolean {
   const db = getDb();
-  const row = db.prepare('SELECT 1 FROM sessions WHERE user_id = ?').get(userId);
-  return row !== undefined;
+  const row = db.prepare('SELECT * FROM sessions WHERE user_id = ?').get(userId) as Row | undefined;
+  if (!row) return false;
+  if (rowIsStale(row)) {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    return false;
+  }
+  return true;
 }
 
-export function clearStaleSessions(maxAgeHours: number, timezone: string): number {
+export function clearStaleSessions(): number {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM sessions').all() as Row[];
-  const cutoff = Date.now() - maxAgeHours * 60 * 60 * 1000;
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
+  const now = new Date();
 
   let cleared = 0;
   for (const row of rows) {
-    const startedMs = new Date(row.started_at).getTime();
-    const sessionDate = new Date(row.started_at).toLocaleDateString('en-CA', { timeZone: timezone });
-    if (startedMs < cutoff || sessionDate !== today) {
+    if (rowIsStale(row, now)) {
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
       cleared++;
     }

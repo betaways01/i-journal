@@ -59,6 +59,13 @@ const {
   runRoutineSkill,
 } = require('../src/routines/skills') as typeof import('../src/routines/skills');
 const {
+  setSessionForUser,
+  getSessionForUser,
+  hasSessionForUser,
+  clearSessionForUser,
+  clearStaleSessions,
+} = require('../src/db/sessions.repo') as typeof import('../src/db/sessions.repo');
+const {
   normalizeBootstrapUnderstanding,
   mergeBootstrapPatch,
 } = require('../src/agent/bootstrap') as typeof import('../src/agent/bootstrap');
@@ -349,6 +356,28 @@ async function run(): Promise<void> {
     !workspaceAfterMemoryAppend.includes('No curated long-term memory yet.'),
     'memory placeholder is removed after first real fact'
   );
+
+  section('Session persistence + stale cleanup');
+  const sessionState = (sessionType: 'drop' | 'onboarding', hoursAgo: number) => ({
+    userId: userRow.telegram_id,
+    sessionType,
+    currentSectionIndex: 0,
+    collectedSections: [],
+    ratings: {},
+    conversationHistory: [],
+    startedAt: new Date(Date.now() - hoursAgo * 60 * 60 * 1000),
+    completed: false,
+  });
+  setSessionForUser(userRow.id, sessionState('drop', 4));
+  clearStaleSessions();
+  assert(hasSessionForUser(userRow.id), 'recent drop session survives stale cleanup');
+  assert(getSessionForUser(userRow.id)?.sessionType === 'drop', 'recent drop session remains readable');
+  setSessionForUser(userRow.id, sessionState('drop', 25));
+  assert(!hasSessionForUser(userRow.id), 'old journal session stops blocking new work');
+  setSessionForUser(userRow.id, sessionState('onboarding', 25));
+  clearStaleSessions();
+  assert(hasSessionForUser(userRow.id), 'setup session survives longer than journal sessions');
+  clearSessionForUser(userRow.id);
 
   section('Reminder scheduling + due filter');
   const past = new Date(Date.now() - 60_000);

@@ -1,6 +1,5 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { Telegraf } from 'telegraf';
-import { config } from '../config';
 import { listOnboardedUsers } from '../db/users.repo';
 import { getProfileForUser, needsReviewForUser } from '../db/profile.repo';
 import {
@@ -11,8 +10,6 @@ import {
 } from '../state/session.store';
 import { clearStaleSessions } from '../db/sessions.repo';
 import { sendMorningPrompt, sendEveningPrompt } from '../bot/handlers/callback.handler';
-
-const STALE_SESSION_HOURS = 3;
 
 let botRef: Telegraf | null = null;
 const activeTasks: ScheduledTask[] = [];
@@ -25,7 +22,7 @@ function timeToCron(time: string): string {
 async function triggerMorningForUser(bot: Telegraf, telegramId: string): Promise<void> {
   console.log(`[Scheduler] Morning trigger for ${telegramId}`);
 
-  clearStaleSessions(STALE_SESSION_HOURS, config.timezone);
+  clearStaleSessions();
 
   const users = listOnboardedUsers();
   const userRow = users.find((u) => u.telegram_id === telegramId);
@@ -52,7 +49,7 @@ async function triggerMorningForUser(bot: Telegraf, telegramId: string): Promise
 async function triggerEveningForUser(bot: Telegraf, telegramId: string): Promise<void> {
   console.log(`[Scheduler] Evening trigger for ${telegramId}`);
 
-  clearStaleSessions(STALE_SESSION_HOURS, config.timezone);
+  clearStaleSessions();
 
   const users = listOnboardedUsers();
   const userRow = users.find((u) => u.telegram_id === telegramId);
