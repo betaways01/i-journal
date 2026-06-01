@@ -2,7 +2,6 @@ import { Context } from 'telegraf';
 import { sessionStore } from '../../state/session.store';
 import { handleCompanionMessage, startCompanionSession } from '../scenes/companion.scene';
 import { handleSettingsMessage } from '../scenes/settings.scene';
-import { handleOnboardingMessage, startOnboarding } from '../scenes/onboarding.scene';
 import { handleAutomationSetupMessage, maybeStartAutomationFromText } from '../scenes/automation.scene';
 import { registerUserFromContext } from '../userContext';
 import { getProfileForUser } from '../../db/profile.repo';
@@ -44,7 +43,9 @@ export async function handleMessage(ctx: Context): Promise<void> {
 
   if (session) {
     if (session.sessionType === 'onboarding') {
-      await handleOnboardingMessage(ctx, telegramId, text);
+      // First-meeting onboarding is now the companion agent itself (warm, single-message,
+      // finishes via the complete_setup tool) — not a separate deterministic form.
+      await handleCompanionMessage(ctx, telegramId, text);
       return;
     }
     if (session.sessionType === 'settings') {
@@ -67,7 +68,8 @@ export async function handleMessage(ctx: Context): Promise<void> {
   const isOnboarded = userRow.onboarding_complete === 1 && Boolean(getProfileForUser(userRow.id));
 
   if (!isOnboarded) {
-    await startOnboarding(ctx, telegramId);
+    // Open the warm first-meeting conversation, treating their message as the first thing said.
+    await startCompanionSession(ctx, telegramId, { mode: 'onboarding', initialUserMessage: text });
     return;
   }
 

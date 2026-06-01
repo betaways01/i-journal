@@ -18,7 +18,7 @@ import { buildMicrosoftAuthUrlForUser } from '../onenote/auth';
 import { hasMicrosoftOAuthConfigured } from '../config';
 import { saveProfileForUser } from '../db/profile.repo';
 import { Profile } from '../profile/defaults';
-import { sectionsFromDiscreteLabels, parseTime, todayLocalDate } from '../bot/scenes/setup.helpers';
+import { sectionsFromDiscreteLabels, parseTime, todayLocalDate, makeProfile } from '../bot/scenes/setup.helpers';
 import { formatDateForJournal } from '../ai/prompts/dayConfig';
 import { appendMemoryFacts, updateAgentIdentityForUser } from './workspace';
 import { reloadScheduler } from '../scheduler';
@@ -49,6 +49,8 @@ export interface SessionEffects {
   savedEntry?: SavedEntryEffect;
   scheduleChanged: boolean;
   profileChanged: boolean;
+  /** Set when complete_setup finishes first-meeting onboarding this turn. */
+  onboardingCompleted?: boolean;
 }
 
 export interface CompanionToolDeps {
@@ -57,6 +59,8 @@ export interface CompanionToolDeps {
   sessionMode: EntryMode;
   /** The date the entry should be filed under (today, or a catch-up date). */
   sessionDate: Date;
+  /** First-meeting onboarding: expose only complete_setup + remember, focused on finishing. */
+  isOnboarding?: boolean;
 }
 
 // Anchor on the most recent entry (today if it has one, else the latest entry date) and
@@ -484,6 +488,37 @@ function runLookUpEntries(deps: CompanionToolDeps, input: Record<string, unknown
  * Build the companion's toolset bound to this user/session, plus a mutable effects
  * object the scene reads after the agent loop finishes.
  */
+function runCompleteSetup(
+  deps: CompanionToolDeps,
+  effects: SessionEffects,
+  input: Record<string, unknown>
+): string {
+  const name = str(input, 'name');
+  if (!name) {
+    return 'Error: a name is required to finish setup. Ask them what to call them, then call this again.';
+  }
+
+  const areasRaw = input['areas'];
+  const areas = Array.isArray(areasRaw)
+    ? areasRaw.filter((a): a is string => typeof a === 'string')
+    : typeof areasRaw === 'string'
+      ? [areasRaw]
+      : [];
+  const sections = areas.length > 0 ? sectionsFromDiscreteLabels(areas) : [];
+  const morningTime = parseTime(str(input, 'morning_time') ?? '') ?? '06:00';
+  const eveningTime = parseTime(str(input, 'evening_time') ?? '') ?? '21:00';
+
+  const profile = makeProfile({ name, sections, morningTime, eveningTime });
+  saveProfileForUser(deps.botUser.row.id, profile);
+  deps.botUser.profile = profile;
+  deps.botUser.row.onboarding_complete = 1;
+  effects.onboardingCompleted = true;
+  reloadScheduler();
+
+  const areaNote = sections.length > 0 ? ` Areas noted: ${sections.map((s) => s.title).join(', ')}.` : '';
+  return `Setup is complete for ${name}.${areaNote} You're fully set up now — all your tools are available. Continue the conversation naturally and help with whatever they came for. Do NOT send a summary card or a second message.`;
+}
+
 export function buildCompanionTools(deps: CompanionToolDeps): {
   tools: CompanionTool[];
   effects: SessionEffects;
@@ -676,6 +711,36 @@ export function buildCompanionTools(deps: CompanionToolDeps): {
       run: async (input) => runLookUpEntries(deps, input),
     },
   ];
+
+  // First-meeting onboarding: keep it focused — only finish-setup + remember are exposed,
+  // so the agent gets a name and calls complete_setup rather than wandering into actions it
+  // can't do yet. The full toolset returns automatically once onboarding is complete.
+  if (deps.isOnboarding) {
+    const completeSetup: CompanionTool = {
+      definition: {
+        name: 'complete_setup',
+        description:
+          'Finish first-meeting setup. Call this the moment you know what to call the user. Only a name is required; areas and check-in times are optional extras if they mentioned any. This saves their profile and unlocks all tools.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'What to call the user (their name or chosen nickname).' },
+            areas: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional life areas they mentioned wanting to track, in their own words.',
+            },
+            morning_time: { type: 'string', description: 'Optional morning check-in time if they gave one.' },
+            evening_time: { type: 'string', description: 'Optional evening journal time if they gave one.' },
+          },
+          required: ['name'],
+        },
+      },
+      run: async (input) => runCompleteSetup(deps, effects, input),
+    };
+    const remember = tools.find((t) => t.definition.name === 'remember');
+    return { tools: remember ? [completeSetup, remember] : [completeSetup], effects };
+  }
 
   return { tools, effects };
 }

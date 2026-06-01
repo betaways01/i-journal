@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -71,10 +72,40 @@ function requireTelegramBotToken(currentNodeEnv: string): string {
   );
 }
 
+function getPublicUrl(): string {
+  const explicit = process.env.PUBLIC_URL;
+  if (explicit) return explicit.replace(/\/+$/, '');
+
+  // Railway injects this at runtime for services with a public domain.
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+
+  // Fall back to the OneNote redirect URI's origin (set to the public URL in production).
+  try {
+    const u = new URL(process.env.MICROSOFT_REDIRECT_URI || '');
+    if (u.protocol === 'https:') return u.origin;
+  } catch {
+    // ignore malformed redirect URI
+  }
+  return '';
+}
+
+const telegramBotToken = requireTelegramBotToken(nodeEnv);
+const publicUrl = getPublicUrl();
+
 export const config = {
   telegram: {
-    botToken: requireTelegramBotToken(nodeEnv),
+    botToken: telegramBotToken,
     ownerId: optionalEnv('TELEGRAM_OWNER_ID'),
+  },
+  // Webhooks in production (with a public HTTPS URL) avoid long-polling, which means no two
+  // instances ever fight over getUpdates during a deploy (the 409 that made Railway report
+  // false "crashes"). Local dev keeps polling.
+  webhook: {
+    enabled: nodeEnv === 'production' && publicUrl.startsWith('https://'),
+    publicUrl,
+    path: '/telegram/webhook',
+    // Stable per-bot secret; sent by Telegram as X-Telegram-Bot-Api-Secret-Token and validated.
+    secretToken: crypto.createHash('sha256').update(`ijournal-webhook:${telegramBotToken}`).digest('hex').slice(0, 48),
   },
   anthropic: {
     apiKey: requireEnv('ANTHROPIC_API_KEY'),

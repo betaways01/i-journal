@@ -107,27 +107,31 @@ async function buildSystemFor(
   memory: MemoryContext,
   catchUpDate?: Date
 ): Promise<{ cacheableCore: string; volatileContext: string }> {
-  const storageSummary = botUser
-    ? getOneNoteStatusForUser(botUser.row).connected
-      ? 'Entries save first to the private SQLite database. OneNote backup/sync is connected for this account.'
-      : 'Entries save first to the private SQLite database. OneNote backup is optional and not connected for this account.'
-    : 'During setup, no journal entries are saved yet. After setup, entries save first to the private SQLite database.';
+  const onboarding = mode === 'onboarding';
+
+  const storageSummary = onboarding
+    ? 'Setup is not finished yet. Once it is, entries save first to the private SQLite database; OneNote is an optional backup.'
+    : botUser
+      ? getOneNoteStatusForUser(botUser.row).connected
+        ? 'Entries save first to the private SQLite database. OneNote backup/sync is connected for this account.'
+        : 'Entries save first to the private SQLite database. OneNote backup is optional and not connected for this account.'
+      : 'During setup, no journal entries are saved yet. After setup, entries save first to the private SQLite database.';
 
   const workspaceContext = botUser
     ? (ensureAgentWorkspaceForUser(botUser.row),
-      renderWorkspaceContext(botUser.row.id, {
-        includeBootstrap: botUser.row.onboarding_complete === 0,
-      }))
+      renderWorkspaceContext(botUser.row.id, { includeBootstrap: onboarding }))
     : undefined;
 
   const { cacheableCore, volatileContext } = buildCompanionPrompt({
-    profile: botUser?.profile ?? null,
+    // During first-meeting onboarding, present "nothing set up yet" (no default profile areas).
+    profile: onboarding ? null : (botUser?.profile ?? null),
     mode,
     now,
     memory,
     catchUpDate,
     storageSummary,
     workspaceContext,
+    firstNameHint: onboarding ? botUser?.row.first_name ?? undefined : undefined,
   });
   return { cacheableCore, volatileContext };
 }
@@ -155,9 +159,11 @@ async function presentSavedEntry(
     await ctx.reply(closingLine.trim());
   }
 
-  // 3) The save confirmation + quick actions.
+  // 3) The save confirmation + quick actions. Disable the link preview so the OneNote URL
+  // doesn't render as an ugly "OneDrive sign-in" card under the message.
   await ctx.reply(buildSaveConfirmation(saved), {
     parse_mode: 'Markdown',
+    link_preview_options: { is_disabled: true },
     reply_markup: { inline_keyboard: POST_SAVE_ACTIONS },
   });
 }
@@ -261,9 +267,12 @@ export async function handleCompanionMessage(
 
   const mode = resolveMode(state);
   const botUser = loadBotUser(telegramId);
-  // Onboarding is handled by the dedicated onboarding scene; without a real user we can't act.
-  if (!botUser || mode === 'onboarding') return;
+  if (!botUser) return;
 
+  const onboarding = mode === 'onboarding';
+  // Defensive: a session created under the OLD deterministic bootstrap may carry a stale `flow`.
+  // The agent path ignores it; drop it so legacy state can't linger after this deploy.
+  if (onboarding && state.flow) state.flow = undefined;
   const entryMode = entryModeFor(mode);
 
   const memory = await loadMemoryFor(botUser, state.startedAt);
@@ -276,6 +285,7 @@ export async function handleCompanionMessage(
     botUser,
     sessionMode: entryMode,
     sessionDate: state.startedAt,
+    isOnboarding: onboarding,
   });
 
   try {
@@ -296,6 +306,13 @@ export async function handleCompanionMessage(
     const closing = result.text.trim();
     const reply = closing || AGENT_REPLY_FALLBACK;
     state.conversationHistory.push({ role: 'assistant', content: reply });
+
+    // First-meeting onboarding just finished → flip the session to a normal drop so the
+    // conversation keeps flowing with the full toolset (no separate "setup complete" card).
+    if (effects.onboardingCompleted) {
+      state.sessionType = 'drop';
+      console.log('[Companion] Onboarding completed via complete_setup for', telegramId);
+    }
     sessionStore.set(telegramId, state);
 
     if (effects.savedEntry) {
@@ -306,7 +323,11 @@ export async function handleCompanionMessage(
       return;
     }
 
-    const showDropActions = entryMode === 'drop';
+    // Only offer the drop "Save & done / Cancel" shortcut once a real thread has built up —
+    // never during onboarding, and never on the opening exchange (it was appearing on simple
+    // questions like "you are?").
+    const showDropActions =
+      !onboarding && entryMode === 'drop' && state.conversationHistory.length >= 6;
     await ctx.reply(
       reply,
       showDropActions ? { reply_markup: { inline_keyboard: DROP_INLINE_ACTIONS } } : undefined

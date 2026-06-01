@@ -1,6 +1,7 @@
 import { Context } from 'telegraf';
 import { InlineKeyboardButton } from 'telegraf/types';
 import { withTyping } from '../../ai';
+import { startCompanionSession } from './companion.scene';
 import { sessionStore } from '../../state/session.store';
 import { getUserByTelegramId } from '../../db/users.repo';
 import { saveProfileForUser } from '../../db/profile.repo';
@@ -222,14 +223,10 @@ async function completeOnboarding(ctx: Context, userId: string, draft: Bootstrap
 }
 
 export async function startOnboarding(ctx: Context, userId: string): Promise<void> {
-  const userRow = getUserByTelegramId(userId);
-  if (userRow) ensureAgentWorkspaceForUser(userRow);
-  const draft = emptyBootstrapDraft();
-  setBootstrapState(userId, draft);
-
-  await ctx.reply(
-    "Let's set this up in a more human way.\n\nTell me what I should call you. You can mention nicknames, another name you use, or even what you'd like to call this companion."
-  );
+  // First-meeting onboarding is the companion agent itself now — a warm, single-message
+  // conversation that finishes via the complete_setup tool. No deterministic bootstrap form,
+  // no canned cards, no double-sends.
+  await startCompanionSession(ctx, userId, { mode: 'onboarding' });
 }
 
 export async function handleOnboardingMessage(ctx: Context, userId: string, text: string): Promise<void> {

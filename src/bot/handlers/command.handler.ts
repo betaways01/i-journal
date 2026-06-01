@@ -47,9 +47,7 @@ export function registerCommands(bot: Telegraf): void {
     const telegramId = userRow.telegram_id;
 
     if (userRow.onboarding_complete === 0) {
-      await ctx.reply(
-        "Hey. I'm your journal companion.\n\nLet's set up the basics so I can remember you properly. /skip anytime if you'd rather use defaults."
-      );
+      // One warm first-meeting greeting from the agent — no canned double-message.
       await startOnboarding(ctx, telegramId);
       return;
     }
@@ -291,6 +289,7 @@ export function registerCommands(bot: Telegraf): void {
         : '';
     await ctx.reply(header + body + cloudNote, {
       parse_mode: 'Markdown',
+      link_preview_options: { is_disabled: true },
       reply_markup: { inline_keyboard: [[{ text: '📝 Drop', callback_data: 'drop_now' }, { text: '📖 Journal', callback_data: 'journal_now' }]] },
     });
   });
