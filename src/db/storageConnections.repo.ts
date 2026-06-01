@@ -100,6 +100,21 @@ export function upsertStorageConnectionForUser(params: {
   return rowToRecord(row);
 }
 
+/**
+ * Merge a patch into the connection's metadata (preserving tokens and existing metadata keys).
+ * Returns null if the user has no stored connection for this provider.
+ */
+export function mergeStorageMetadataForUser(
+  userId: number,
+  provider: StorageProvider,
+  patch: Record<string, unknown>
+): StorageConnectionRecord | null {
+  const existing = getStorageConnectionForUser(userId, provider);
+  if (!existing) return null;
+  const metadata = { ...(existing.metadata ?? {}), ...patch };
+  return upsertStorageConnectionForUser({ userId, provider, metadata });
+}
+
 export function deleteStorageConnectionForUser(
   userId: number,
   provider: StorageProvider
