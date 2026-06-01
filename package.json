@@ -11,8 +11,7 @@
     "build": "rimraf dist && tsc",
     "start": "node dist/app.js",
     "get-token": "ts-node scripts/get-token.ts",
-    "smoke": "ts-node scripts/smoke.ts",
-    "preflight:agent": "ts-node scripts/agent-preflight.ts"
+    "smoke": "ts-node scripts/smoke.ts"
   },
   "keywords": [],
   "author": "",

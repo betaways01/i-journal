@@ -569,6 +569,40 @@ async function run(): Promise<void> {
     'per-user OneNote notebook/section is read from connection metadata (not hardcoded)'
   );
 
+  section('First-meeting onboarding (agent-driven, complete_setup)');
+  const onbUser = upsertUser({ telegramId: 'smoke-onboard-1', firstName: 'Newbie', isOwner: false });
+  const onbBotUser = {
+    row: onbUser,
+    telegramId: onbUser.telegram_id,
+    profile: { ...getDefaultProfile(), timezone: 'Africa/Nairobi' },
+    isOwner: false,
+  };
+  const { tools: onbTools, effects: onbEffects } = buildCompanionTools({
+    botUser: onbBotUser,
+    sessionMode: 'drop',
+    sessionDate: new Date(),
+    isOnboarding: true,
+  });
+  const onbNames = onbTools.map((t) => t.definition.name);
+  assert(onbNames.includes('complete_setup'), 'onboarding exposes complete_setup');
+  assert(onbNames.includes('remember'), 'onboarding exposes remember');
+  assert(!onbNames.includes('save_journal_entry'), 'onboarding stays focused — no journal/action tools yet');
+  const setupRes = await onbTools.find((t) => t.definition.name === 'complete_setup')!.run({ name: 'Newbie' });
+  assert(setupRes.toLowerCase().includes('setup is complete'), 'complete_setup confirms completion');
+  assert(onbEffects.onboardingCompleted === true, 'complete_setup sets the onboardingCompleted effect');
+  const onbProfile = getProfileForUser(onbUser.id);
+  assert(onbProfile?.name === 'Newbie' && onbProfile.onboardingComplete === true, 'complete_setup saved an onboarded profile');
+  assert((onbProfile?.sections.length ?? -1) === 0, 'complete_setup imposes NO default areas');
+  const { volatileContext: onbCtx } = buildCompanionPrompt({
+    profile: null,
+    mode: 'onboarding',
+    now: new Date(),
+    memory: mem,
+    firstNameHint: 'Newbie',
+  });
+  assert(onbCtx.includes('FIRST MEETING'), 'onboarding prompt uses the first-meeting block');
+  assert(onbCtx.includes('complete_setup'), 'onboarding prompt instructs calling complete_setup');
+
   section('Time parsing — bare meridiem (9pm/12am) and rejection');
   assert(parseTime('9pm') === '21:00', `"9pm" -> 21:00 (got ${parseTime('9pm')})`);
   assert(parseTime('12am') === '00:00', `"12am" -> 00:00 (got ${parseTime('12am')})`);

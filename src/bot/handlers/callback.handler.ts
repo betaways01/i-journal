@@ -189,7 +189,10 @@ export function registerCallbacks(bot: Telegraf): void {
               ? '\n\n_(drop entries save locally for now)_'
               : '\n\n_(not yet synced to OneNote)_'
             : '';
-        await ctx.reply(header + body + cloudNote, { parse_mode: 'Markdown' });
+        await ctx.reply(header + body + cloudNote, {
+          parse_mode: 'Markdown',
+          link_preview_options: { is_disabled: true },
+        });
         return;
       }
       case 'status_now': {

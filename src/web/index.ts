@@ -95,6 +95,13 @@ export function startWebServer(bot: Telegraf): void {
 
   const app = express();
 
+  // In webhook mode, let Telegram POST updates to this server. Mounted before any body
+  // parser so Telegraf reads the raw update; the secret token is validated per request.
+  if (config.webhook.enabled) {
+    app.use(bot.webhookCallback(config.webhook.path, { secretToken: config.webhook.secretToken }));
+    console.log(`[Web] Telegram webhook endpoint mounted at ${config.webhook.path}`);
+  }
+
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'i-journal-web' });
   });

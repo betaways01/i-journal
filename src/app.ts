@@ -1,4 +1,5 @@
 import { createBot } from './bot';
+import { config } from './config';
 import { startScheduler } from './scheduler';
 import { startReminderSweeper, stopReminderSweeper } from './scheduler/reminders';
 import { startRoutineSweeper, stopRoutineSweeper } from './scheduler/routines';
@@ -101,7 +102,27 @@ async function main(): Promise<void> {
     }
   };
 
-  await launchWithRetry();
+  if (config.webhook.enabled) {
+    // Webhook mode (production): Telegram POSTs updates to our public URL. No long-polling,
+    // so deploys never trigger a 409 overlap — and Railway stops reporting false crashes.
+    const webhookUrl = `${config.webhook.publicUrl}${config.webhook.path}`;
+    try {
+      await bot.telegram.setWebhook(webhookUrl, {
+        secret_token: config.webhook.secretToken,
+        drop_pending_updates: true,
+      });
+      markStarted();
+      console.log(`[i-Journal] Webhook mode active → ${webhookUrl}`);
+    } catch (error) {
+      console.error('[i-Journal] setWebhook failed — falling back to long-polling:', error);
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+      await launchWithRetry();
+    }
+  } else {
+    // Dev / no public URL: long-polling. Clear any stale webhook first so getUpdates works.
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+    await launchWithRetry();
+  }
 }
 
 main().catch((error) => {
