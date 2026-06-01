@@ -300,9 +300,24 @@ interface PageLinks {
   oneNoteWebUrl?: { href?: string };
 }
 
-/** Prefer the app (client) URL so "Open in OneNote" opens the OneNote app, not the web. */
+/**
+ * Return a TAPPABLE https URL for the page. Telegram only renders http(s) anchors as clickable
+ * links — a raw "onenote:..." client URL shows up as dead plain text. So we prefer the https
+ * web URL; if only the client URL exists, we strip its "onenote:" scheme to recover the https
+ * target underneath. On mobile, tapping a OneNote/OneDrive https link still hands off to the
+ * OneNote app when it's installed — so we keep app-opening without sacrificing a working link.
+ */
 function preferredPageUrl(links?: PageLinks): string | null {
-  return links?.oneNoteClientUrl?.href || links?.oneNoteWebUrl?.href || null;
+  const web = links?.oneNoteWebUrl?.href;
+  if (web && /^https?:\/\//i.test(web)) return web;
+
+  const client = links?.oneNoteClientUrl?.href;
+  if (client) {
+    const stripped = /^onenote:(https?:\/\/.+)$/i.exec(client);
+    if (stripped) return stripped[1];
+    if (/^https?:\/\//i.test(client)) return client;
+  }
+  return null;
 }
 
 function isOneNoteLicenseError(body: string): boolean {

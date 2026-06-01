@@ -607,6 +607,14 @@ async function run(): Promise<void> {
     'per-user OneNote notebook/section is read from connection metadata (not hardcoded)'
   );
 
+  section('Open-in-OneNote renders a real tappable link, not dead text');
+  const { oneNoteLinkHtml } = require('../src/bot/telegramHtml') as typeof import('../src/bot/telegramHtml');
+  const httpsLink = oneNoteLinkHtml('https://onedrive.live.com/redir?page-id=abc');
+  assert(/^<a href="https:\/\//.test(httpsLink), 'https URL becomes a clickable <a> anchor');
+  // A raw "onenote:..." scheme must NOT be emitted as an anchor (Telegram shows it as dead text).
+  const appSchemeLink = oneNoteLinkHtml('onenote:https://d.docs.live.net/x/Section.one#page');
+  assert(!appSchemeLink.includes('<a '), 'onenote: scheme is never wrapped in an anchor (would be dead text)');
+
   section('First-meeting onboarding (agent-driven, complete_setup)');
   const onbUser = upsertUser({ telegramId: 'smoke-onboard-1', firstName: 'Newbie', isOwner: false });
   const onbBotUser = {
