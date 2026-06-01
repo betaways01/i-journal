@@ -37,38 +37,69 @@ async function main(): Promise<void> {
     console.log('[i-Journal] Bot is running! Listening for messages...');
   };
 
-  const launchWithRetry = async () => {
-    const maxAttempts = 6;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  let shuttingDown = false;
+  const shutdown = (signal: string, exitCode?: number): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[i-Journal] Shutting down (${signal})...`);
+    try {
+      bot.stop(signal);
+    } catch (err) {
+      console.error('[i-Journal] bot.stop failed:', err);
+    }
+    stopReminderSweeper();
+    stopRoutineSweeper();
+    closeWebServer();
+    closeDb();
+    if (typeof exitCode === 'number') {
+      // Let logs flush, then exit so the platform restarts cleanly and the Telegram polling
+      // lock is released promptly for the next instance.
+      setTimeout(() => process.exit(exitCode), 250);
+    }
+  };
+
+  // Exit fast and clean on platform stop signals so a redeploy's new instance can acquire the
+  // Telegram polling lock without a long 409 overlap (the thing that makes deploys look crashed).
+  process.once('SIGINT', () => shutdown('SIGINT', 0));
+  process.once('SIGTERM', () => shutdown('SIGTERM', 0));
+
+  // Last-resort safety nets. Previously a process-level crash vanished with no stack trace.
+  process.on('uncaughtException', (err) => {
+    console.error('[i-Journal] uncaughtException — exiting for a clean restart:', err);
+    shutdown('uncaughtException', 1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    // Log loudly but stay up: one stray dropped promise (e.g. a failed Telegram send) must not
+    // take the whole bot down for every user. Genuine bugs are still surfaced here for follow-up.
+    console.error('[i-Journal] unhandledRejection (continuing):', reason);
+  });
+
+  // Resilient launch: drop the backlog on (re)start so a poison message can't crash-loop, and
+  // treat a 409 "another instance is polling" as a transient deploy overlap — wait it out with
+  // backoff instead of crashing.
+  const launchWithRetry = async (): Promise<void> => {
+    const startedAt = Date.now();
+    const maxWaitMs = 5 * 60 * 1000;
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
       try {
-        await bot.launch(() => {
-          markStarted();
-        });
+        await bot.launch({ dropPendingUpdates: true }, markStarted);
         return;
       } catch (error) {
-        if (!isTelegramPollingConflict(error) || attempt === maxAttempts) {
+        const elapsedMs = Date.now() - startedAt;
+        if (!isTelegramPollingConflict(error) || elapsedMs > maxWaitMs) {
           throw error;
         }
-        const delayMs = Math.min(5000 * attempt, 20_000);
+        const delayMs = Math.min(3000 * attempt, 15_000);
         console.warn(
-          `[i-Journal] Telegram polling is still held by another instance. Retrying in ${Math.round(delayMs / 1000)}s...`
+          `[i-Journal] Telegram polling held by a previous instance (deploy overlap). ` +
+            `Waiting ${Math.round(delayMs / 1000)}s (attempt ${attempt})...`
         );
         await sleep(delayMs);
       }
     }
   };
-
-  const shutdown = (signal: string) => {
-    console.log(`[i-Journal] Shutting down (${signal})...`);
-    bot.stop(signal);
-    stopReminderSweeper();
-    stopRoutineSweeper();
-    closeWebServer();
-    closeDb();
-  };
-
-  process.once('SIGINT', () => shutdown('SIGINT'));
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
 
   await launchWithRetry();
 }
