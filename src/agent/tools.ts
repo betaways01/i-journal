@@ -12,6 +12,8 @@ import {
   getOneNoteTargetForUser,
   ensureOneNoteLocationForUser,
   createOneNotePageForUser,
+  searchOneNotePagesForUser,
+  readOneNotePageForUser,
 } from '../onenote/writer';
 import { mergeStorageMetadataForUser, upsertStorageConnectionForUser } from '../db/storageConnections.repo';
 import { buildMicrosoftAuthUrlForUser } from '../onenote/auth';
@@ -436,6 +438,32 @@ async function runCreateOneNotePage(deps: CompanionToolDeps, input: Record<strin
   return `Created OneNote page "${title}" in "${target.notebook}" → "${target.section}".${url ? ` Link: ${url}` : ''}`;
 }
 
+async function runSearchOneNote(deps: CompanionToolDeps, input: Record<string, unknown>): Promise<string> {
+  const query = str(input, 'query');
+  if (!query) return 'Error: query is required — what should I look for in their notes?';
+  if (!getOneNoteStatusForUser(deps.botUser.row).connected) {
+    return 'OneNote is not connected for this account yet — connect it from /storage first, then I can search your notes.';
+  }
+  const limit = num(input, 'limit') ?? 8;
+  const hits = await searchOneNotePagesForUser(deps.botUser.row, query, limit);
+  if (hits.length === 0) return `No OneNote pages matched "${query}".`;
+  const lines = hits.map(
+    (h, i) =>
+      `${i + 1}. [id: ${h.id}] "${h.title}"${h.lastModified ? ` — modified ${h.lastModified.slice(0, 10)}` : ''}`
+  );
+  return `Found ${hits.length} OneNote page(s) for "${query}". To read one, call read_onenote_page with its id:\n${lines.join('\n')}`;
+}
+
+async function runReadOneNotePage(deps: CompanionToolDeps, input: Record<string, unknown>): Promise<string> {
+  const pageId = str(input, 'page_id');
+  if (!pageId) return 'Error: page_id is required (get it from search_onenote first).';
+  if (!getOneNoteStatusForUser(deps.botUser.row).connected) {
+    return 'OneNote is not connected for this account yet — connect it from /storage first.';
+  }
+  const text = await readOneNotePageForUser(deps.botUser.row, pageId);
+  return text ? `Page content:\n${text}` : 'That page appears to be empty.';
+}
+
 function runOneNoteStatus(deps: CompanionToolDeps): string {
   const status = getOneNoteStatusForUser(deps.botUser.row);
   if (status.connected) {
@@ -664,6 +692,37 @@ export function buildCompanionTools(deps: CompanionToolDeps): {
         input_schema: { type: 'object', properties: {} },
       },
       run: async () => runOneNoteStatus(deps),
+    },
+    {
+      definition: {
+        name: 'search_onenote',
+        description:
+          "Search the user's EXISTING OneNote pages by keyword (full text). Use whenever they ask you to find, review, or recall something from their notes — e.g. \"read through my OneNote and find where I studied Forex\". Returns matching page titles + ids; then call read_onenote_page to actually read one. Requires OneNote connected.",
+        input_schema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Keywords to search for across their notes.' },
+            limit: { type: 'number', description: 'Max pages to return (default 8).' },
+          },
+          required: ['query'],
+        },
+      },
+      run: (input) => runSearchOneNote(deps, input),
+    },
+    {
+      definition: {
+        name: 'read_onenote_page',
+        description:
+          'Read the full text of ONE OneNote page by its id (from search_onenote). Use after searching to actually read what they wrote, then answer or summarize. Requires OneNote connected.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            page_id: { type: 'string', description: 'The page id from search_onenote results.' },
+          },
+          required: ['page_id'],
+        },
+      },
+      run: (input) => runReadOneNotePage(deps, input),
     },
     {
       definition: {
