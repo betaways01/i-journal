@@ -17,6 +17,7 @@ import {
 } from '../../agent/workspace';
 import { buildCompanionTools, EntryMode, SavedEntryEffect } from '../../agent/tools';
 import { POST_SAVE_ACTIONS, DROP_INLINE_ACTIONS } from '../keyboards';
+import { oneNoteLinkHtml } from '../telegramHtml';
 
 interface StartOptions {
   mode: CompanionMode;
@@ -69,9 +70,9 @@ function buildSaveConfirmation(saved: SavedEntryEffect): string {
   let msg = parts.join('');
 
   if (saved.oneNoteStatus === 'synced' && saved.oneNoteUrl) {
-    msg += `\n[Open in OneNote](${saved.oneNoteUrl})`;
+    msg += `\n${oneNoteLinkHtml(saved.oneNoteUrl)}`;
   } else if (saved.oneNoteStatus === 'failed') {
-    msg += `\n_couldn't reach OneNote this time — your entry is safe locally. /storage to reconnect._`;
+    msg += `\n<i>couldn't reach OneNote this time — your entry is safe locally. /storage to reconnect.</i>`;
   }
 
   return msg;
@@ -159,10 +160,10 @@ async function presentSavedEntry(
     await ctx.reply(closingLine.trim());
   }
 
-  // 3) The save confirmation + quick actions. Disable the link preview so the OneNote URL
-  // doesn't render as an ugly "OneDrive sign-in" card under the message.
+  // 3) The save confirmation + quick actions. HTML so "Open in OneNote" can be an onenote:
+  // app link; preview disabled so it doesn't render as an ugly "OneDrive sign-in" card.
   await ctx.reply(buildSaveConfirmation(saved), {
-    parse_mode: 'Markdown',
+    parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
     reply_markup: { inline_keyboard: POST_SAVE_ACTIONS },
   });

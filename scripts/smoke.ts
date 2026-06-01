@@ -474,6 +474,8 @@ async function run(): Promise<void> {
     'onenote_status',
     'set_onenote_location',
     'create_onenote_page',
+    'search_onenote',
+    'read_onenote_page',
     'look_up_entries',
   ]) {
     assert(toolNames.includes(expected), `tool present: ${expected}`);
@@ -516,6 +518,10 @@ async function run(): Promise<void> {
     content: 'something interesting',
   });
   assert(pageResult.toLowerCase().includes('not connected'), 'create_onenote_page refuses honestly when OneNote not connected');
+  const searchRes = await tools.find((t) => t.definition.name === 'search_onenote')!.run({ query: 'Forex' });
+  assert(searchRes.toLowerCase().includes('not connected'), 'search_onenote refuses honestly when OneNote not connected');
+  const readRes = await tools.find((t) => t.definition.name === 'read_onenote_page')!.run({ page_id: 'abc' });
+  assert(readRes.toLowerCase().includes('not connected'), 'read_onenote_page refuses honestly when OneNote not connected');
 
   const schedResult = await tools.find((t) => t.definition.name === 'update_schedule')!.run({
     morning_time: '7am',

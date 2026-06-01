@@ -18,6 +18,7 @@ import { getOneNoteStatusForUser } from '../../onenote/writer';
 import { getJournalState, getTodayDateStringInZone } from '../../state/session.store';
 import { loadBotUser } from '../userContext';
 import { STATUS_ACTIONS } from '../keyboards';
+import { escapeHtml, oneNoteLinkHtml } from '../telegramHtml';
 
 const REMIND_LATER_MINUTES = 30;
 
@@ -177,20 +178,17 @@ export function registerCallbacks(bot: Telegraf): void {
           await ctx.reply('No entries yet — /journal or /drop to make your first.');
           return;
         }
-        const header = `📄 *${entry.entry_date} (${entry.day_of_week})*\n\n`;
-        const body = entry.content_markdown.length > 3500
+        const rawBody = entry.content_markdown.length > 3500
           ? entry.content_markdown.slice(0, 3500) + '\n\n…(truncated)'
           : entry.content_markdown;
-        const isDrop = entry.session_type.startsWith('drop');
+        const header = `📄 <b>${escapeHtml(entry.entry_date)} (${escapeHtml(entry.day_of_week)})</b>\n\n`;
         const cloudNote = entry.onenote_url
-          ? `\n\n[Open in OneNote](${entry.onenote_url})`
+          ? `\n\n${oneNoteLinkHtml(entry.onenote_url)}`
           : entry.saved_to_cloud === 0 && getOneNoteStatusForUser(userRow).connected
-            ? isDrop
-              ? '\n\n_(drop entries save locally for now)_'
-              : '\n\n_(not yet synced to OneNote)_'
+            ? '\n\n<i>(not yet synced to OneNote)</i>'
             : '';
-        await ctx.reply(header + body + cloudNote, {
-          parse_mode: 'Markdown',
+        await ctx.reply(header + escapeHtml(rawBody) + cloudNote, {
+          parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
         });
         return;

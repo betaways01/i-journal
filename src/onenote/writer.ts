@@ -290,10 +290,115 @@ export async function createOneNotePageForUser(
     throw new Error(`Failed to create OneNote page (${res.status}). ${body.slice(0, 200)}`);
   }
 
-  const pageData = (await res.json()) as { links?: { oneNoteWebUrl?: { href?: string } } };
-  const webUrl = pageData.links?.oneNoteWebUrl?.href || null;
+  const pageData = (await res.json()) as { links?: PageLinks };
   console.log(`[OneNote] Page created for user ${user.telegram_id}: ${title}`);
-  return webUrl;
+  return preferredPageUrl(pageData.links);
+}
+
+interface PageLinks {
+  oneNoteClientUrl?: { href?: string };
+  oneNoteWebUrl?: { href?: string };
+}
+
+/** Prefer the app (client) URL so "Open in OneNote" opens the OneNote app, not the web. */
+function preferredPageUrl(links?: PageLinks): string | null {
+  return links?.oneNoteClientUrl?.href || links?.oneNoteWebUrl?.href || null;
+}
+
+function isOneNoteLicenseError(body: string): boolean {
+  return body.includes('30121') || /SharePoint license/i.test(body) || /tenant does not have/i.test(body);
+}
+
+export interface OneNotePageHit {
+  id: string;
+  title: string;
+  appUrl: string | null;
+  webUrl: string | null;
+  lastModified: string | null;
+}
+
+/**
+ * Search the user's OneNote pages. Primary path is Graph full-text $search; if a tenant/account
+ * doesn't support it, fall back to listing recent pages and filtering by title. Read-only.
+ */
+export async function searchOneNotePagesForUser(
+  user: UserRow,
+  query: string,
+  limit = 8
+): Promise<OneNotePageHit[]> {
+  const top = Math.min(Math.max(limit, 1), 50);
+  const clean = query.replace(/"/g, '').trim();
+  const enc = encodeURIComponent(`"${clean}"`);
+
+  let pages: Record<string, unknown>[] = [];
+  const res = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/pages?$search=${enc}&$top=${top}`);
+  if (res.ok) {
+    pages = ((await res.json()) as { value?: Record<string, unknown>[] }).value ?? [];
+  } else {
+    const body = await res.text();
+    if (isOneNoteLicenseError(body)) throw new Error(ONENOTE_LICENSE_HINT);
+    // Fallback: most-recently-modified pages, filtered by title client-side.
+    const listRes = await graphRequestForUser(
+      user,
+      `${GRAPH_BASE}/me/onenote/pages?$top=100&$orderby=lastModifiedDateTime%20desc`
+    );
+    if (!listRes.ok) {
+      const body2 = await listRes.text();
+      if (isOneNoteLicenseError(body2)) throw new Error(ONENOTE_LICENSE_HINT);
+      throw new Error(`OneNote search failed (${listRes.status}). ${body2.slice(0, 160)}`);
+    }
+    const all = ((await listRes.json()) as { value?: Record<string, unknown>[] }).value ?? [];
+    const q = clean.toLowerCase();
+    pages = all
+      .filter((p) => typeof p.title === 'string' && (p.title as string).toLowerCase().includes(q))
+      .slice(0, top);
+  }
+
+  return pages.map((p) => {
+    const links = p.links as PageLinks | undefined;
+    return {
+      id: String(p.id ?? ''),
+      title: typeof p.title === 'string' && p.title ? (p.title as string) : '(untitled page)',
+      appUrl: links?.oneNoteClientUrl?.href ?? null,
+      webUrl: links?.oneNoteWebUrl?.href ?? null,
+      lastModified: typeof p.lastModifiedDateTime === 'string' ? (p.lastModifiedDateTime as string) : null,
+    };
+  });
+}
+
+function htmlToText(html: string): string {
+  const text = html
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<\/(?:p|div|h[1-6]|li|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return text.length > 4000 ? `${text.slice(0, 4000).trimEnd()}\n…(truncated)` : text;
+}
+
+/** Read a OneNote page's content (by page id), returned as plain text. Read-only. */
+export async function readOneNotePageForUser(user: UserRow, pageId: string): Promise<string> {
+  const res = await graphRequestForUser(
+    user,
+    `${GRAPH_BASE}/me/onenote/pages/${encodeURIComponent(pageId)}/content`
+  );
+  if (!res.ok) {
+    const body = await res.text();
+    if (isOneNoteLicenseError(body)) throw new Error(ONENOTE_LICENSE_HINT);
+    throw new Error(`Couldn't read that OneNote page (${res.status}).`);
+  }
+  const html = await res.text();
+  return htmlToText(html);
 }
 
 function buildPageXhtml(title: string, markdownContent: string): string {
@@ -419,8 +524,8 @@ export async function writeMorningToOneNoteForUser(
     throw new Error(`Failed to create OneNote page: ${await res.text()}`);
   }
 
-  const pageData = (await res.json()) as { links?: { oneNoteWebUrl?: { href?: string } } };
-  const webUrl = pageData.links?.oneNoteWebUrl?.href || null;
+  const pageData = (await res.json()) as { links?: PageLinks };
+  const webUrl = preferredPageUrl(pageData.links);
 
   console.log(`[OneNote] Morning entry saved for user ${user.telegram_id}: ${title}`);
   return webUrl;
@@ -454,8 +559,8 @@ export async function writeEveningToOneNoteForUser(
     throw new Error(`Failed to create OneNote page: ${await res.text()}`);
   }
 
-  const pageData = (await res.json()) as { links?: { oneNoteWebUrl?: { href?: string } } };
-  const webUrl = pageData.links?.oneNoteWebUrl?.href || null;
+  const pageData = (await res.json()) as { links?: PageLinks };
+  const webUrl = preferredPageUrl(pageData.links);
 
   console.log(`[OneNote] Evening entry saved for user ${user.telegram_id}: ${title}`);
   return webUrl;
