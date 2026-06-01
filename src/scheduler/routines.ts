@@ -8,15 +8,26 @@ import {
 import { getUserById } from '../db/users.repo';
 import { getProfileForUser } from '../db/profile.repo';
 import { sessionStore } from '../state/session.store';
-import { computeNextRunAt, retryRunAt } from '../routines/schedule';
+import { computeNextRunAt, retryRunAt, isStaleTimeOfDaySlot } from '../routines/schedule';
 import { runRoutineSkill } from '../routines/skills';
 import { RoutineRecord } from '../routines/types';
 
 const SWEEP_INTERVAL_MS = 60_000;
 const ACTIVE_SESSION_POSTPONE_MINUTES = 15;
+// A time-of-day routine (daily/weekly) that we only reach well after its slot — because the
+// app was down/redeploying when it was due — must NOT be sent late. A "6pm reflection" should
+// never arrive at 2am just because the process restarted overnight. Past this grace, we skip
+// the missed slot and roll forward to the next real occurrence. Interval routines are cadence-
+// based (not pinned to a time of day), so this staleness rule does not apply to them.
+const STALE_GRACE_MS = 2 * 60 * 60 * 1000;
 
 let intervalHandle: NodeJS.Timeout | null = null;
 const runningRoutineIds = new Set<number>();
+
+/** True when a daily/weekly routine is so overdue that firing now would land at the wrong time of day. */
+function isStaleTimeOfDayRun(routine: RoutineRecord, now: Date): boolean {
+  return isStaleTimeOfDaySlot(routine.schedule, routine.next_run_at, now, STALE_GRACE_MS);
+}
 
 async function executeRoutine(bot: Telegraf, routine: RoutineRecord): Promise<void> {
   if (runningRoutineIds.has(routine.id)) return;
@@ -34,6 +45,20 @@ async function executeRoutine(bot: Telegraf, routine: RoutineRecord): Promise<vo
     const profile = getProfileForUser(user.id);
     if (!profile) {
       throw new Error('Routine user has no profile.');
+    }
+
+    // Missed its time-of-day slot (app was down/redeploying through it) — don't fire it late at
+    // the wrong hour. Roll forward to the next occurrence and record a clean skip.
+    if (isStaleTimeOfDayRun(routine, now)) {
+      const nextRunAt = computeNextRunAt(routine.schedule, now);
+      updateRoutine(routine.id, { nextRunAt });
+      finishRoutineRun({
+        runId,
+        status: 'postponed',
+        outputSummary: `Missed slot (overdue) — skipped to ${nextRunAt.toISOString()}`,
+      });
+      console.log(`[RoutineSweeper] routine ${routine.id} missed its slot — skipped to ${nextRunAt.toISOString()}`);
+      return;
     }
 
     if (sessionStore.has(user.telegram_id)) {

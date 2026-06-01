@@ -143,6 +143,11 @@ function toAnthropicMessages(history: ConversationState['conversationHistory']):
 
 const AGENT_REPLY_FALLBACK = "I'm here — say more whenever you're ready.";
 
+// The agent often mentions URLs (OneNote, a link it found). Telegram otherwise renders an ugly
+// auto-preview card (e.g. the "Microsoft OneNote Online — sign in" box). Disable it everywhere
+// the companion speaks; the only intentional link is the tappable "Open in OneNote" anchor.
+const NO_PREVIEW = { link_preview_options: { is_disabled: true } } as const;
+
 async function presentSavedEntry(
   ctx: Context,
   saved: SavedEntryEffect,
@@ -152,12 +157,12 @@ async function presentSavedEntry(
   // Markdown ignores "##" headings and 400s on unbalanced * _), so strip the leading
   // heading line — the mode is already shown in the save confirmation below.
   const body = saved.markdown.replace(/^\s*#{1,6}\s.*(?:\r?\n)+/, '').trim() || saved.markdown.trim();
-  await ctx.reply(body);
+  await ctx.reply(body, NO_PREVIEW);
   void reactToUserMessage(ctx, saved.mode === 'morning' ? '☀' : saved.mode === 'evening' ? '🌙' : '✍');
 
   // 2) A short warm closing line from the companion (if it added one).
   if (closingLine && closingLine.trim()) {
-    await ctx.reply(closingLine.trim());
+    await ctx.reply(closingLine.trim(), NO_PREVIEW);
   }
 
   // 3) The save confirmation + quick actions. HTML so "Open in OneNote" can be an onenote:
@@ -250,7 +255,7 @@ export async function startCompanionSession(
     );
     sessionStore.set(telegramId, state);
 
-    await ctx.reply(greeting);
+    await ctx.reply(greeting, NO_PREVIEW);
   } catch (error) {
     console.error('[Companion] Failed to start session:', error);
     sessionStore.clear(telegramId);
@@ -331,7 +336,9 @@ export async function handleCompanionMessage(
       !onboarding && entryMode === 'drop' && state.conversationHistory.length >= 6;
     await ctx.reply(
       reply,
-      showDropActions ? { reply_markup: { inline_keyboard: DROP_INLINE_ACTIONS } } : undefined
+      showDropActions
+        ? { ...NO_PREVIEW, reply_markup: { inline_keyboard: DROP_INLINE_ACTIONS } }
+        : NO_PREVIEW
     );
   } catch (error) {
     console.error('[Companion] Error processing message:', error);
