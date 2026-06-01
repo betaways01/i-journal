@@ -279,6 +279,9 @@ async function run(): Promise<void> {
   });
   assert(setupProfile.onboardingComplete === true, 'setup profile marks onboarding complete');
   assert(setupProfile.sections[1].title === 'God', 'setup profile preserves God area');
+  // De-hardcode: when the user names no areas, none are imposed (no Work/Family/Faith/Personal).
+  const noAreaProfile = makeProfile({ name: 'Solo', sections: [], morningTime: '06:00', eveningTime: '21:00' });
+  assert(noAreaProfile.sections.length === 0, 'makeProfile no longer imposes default areas when none given');
 
   section('OpenClaw-style workspace + bootstrap understanding');
   ensureAgentWorkspaceForUser(userRow);
@@ -469,6 +472,8 @@ async function run(): Promise<void> {
     'update_profile',
     'rename_companion',
     'onenote_status',
+    'set_onenote_location',
+    'create_onenote_page',
     'look_up_entries',
   ]) {
     assert(toolNames.includes(expected), `tool present: ${expected}`);
@@ -498,6 +503,19 @@ async function run(): Promise<void> {
     effects.savedEntry?.oneNoteStatus === 'not_connected',
     'save honestly reports OneNote not connected in smoke env (no silent false claim)'
   );
+
+  // OneNote location/page tools must refuse honestly when not connected — never silently
+  // claim success (the bug that made the bot feel "dumb"). No network in smoke.
+  const locResult = await tools.find((t) => t.definition.name === 'set_onenote_location')!.run({
+    notebook: 'mygreatlifestyle',
+    section: 'i-journal',
+  });
+  assert(locResult.toLowerCase().includes('not connected'), 'set_onenote_location refuses honestly when OneNote not connected');
+  const pageResult = await tools.find((t) => t.definition.name === 'create_onenote_page')!.run({
+    title: 'Test',
+    content: 'something interesting',
+  });
+  assert(pageResult.toLowerCase().includes('not connected'), 'create_onenote_page refuses honestly when OneNote not connected');
 
   const schedResult = await tools.find((t) => t.definition.name === 'update_schedule')!.run({
     morning_time: '7am',
@@ -532,6 +550,23 @@ async function run(): Promise<void> {
   assert(
     userRoutines.some((r) => r.schedule.type === 'weekly') && userRoutines.some((r) => r.schedule.type === 'interval'),
     'weekly and interval routines both persisted'
+  );
+
+  section('OneNote token-aware status + per-user location');
+  const { upsertStorageConnectionForUser } = require('../src/db/storageConnections.repo') as typeof import('../src/db/storageConnections.repo');
+  const { getOneNoteStatusForUser, getOneNoteTargetForUser } = require('../src/onenote/writer') as typeof import('../src/onenote/writer');
+  // A metadata-only row (no tokens) stores the chosen location but must NOT be reported as an
+  // OAuth connection (else it would hijack the legacy env-token auth path).
+  upsertStorageConnectionForUser({
+    userId: userRow.id,
+    provider: 'onenote',
+    metadata: { notebook: 'mygreatlifestyle', section: 'i-journal' },
+  });
+  assert(getOneNoteStatusForUser(userRow).connected === false, 'metadata-only row (no tokens) is NOT reported as connected');
+  const onenoteTarget = getOneNoteTargetForUser(userRow);
+  assert(
+    onenoteTarget.notebook === 'mygreatlifestyle' && onenoteTarget.section === 'i-journal',
+    'per-user OneNote notebook/section is read from connection metadata (not hardcoded)'
   );
 
   section('Time parsing — bare meridiem (9pm/12am) and rejection');

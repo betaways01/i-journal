@@ -257,7 +257,9 @@ export function registerCommands(bot: Telegraf): void {
       status += `\n🔄 Active session: ${activeSession.sessionType}`;
     }
 
-    status += `\n\n📋 Sections: ${botUser.profile.sections.map((s) => s.emoji).join(' ')}`;
+    if (botUser.profile.sections.length > 0) {
+      status += `\n\n📋 Sections: ${botUser.profile.sections.map((s) => s.emoji).join(' ')}`;
+    }
 
     await ctx.reply(status, {
       parse_mode: 'Markdown',

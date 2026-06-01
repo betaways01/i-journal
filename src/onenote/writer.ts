@@ -7,12 +7,31 @@ import {
   ONENOTE_LICENSE_HINT,
 } from './auth';
 import { hasLegacyOwnerOneNoteConfigured } from '../config';
-import { deleteStorageConnectionForUser } from '../db/storageConnections.repo';
+import {
+  deleteStorageConnectionForUser,
+  getStorageConnectionForUser,
+} from '../db/storageConnections.repo';
 import { UserRow } from '../db/users.repo';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
-const NOTEBOOK_NAME = 'i-Journal';
-const SECTION_NAME = 'Daily Entries';
+const DEFAULT_NOTEBOOK_NAME = 'i-Journal';
+const DEFAULT_SECTION_NAME = 'Daily Entries';
+
+/**
+ * Where this user's journal goes in OneNote. The user can change it (set_onenote_location),
+ * stored in the connection metadata; defaults to the i-Journal / Daily Entries names.
+ * Nothing here is hardcoded to a single place anymore.
+ */
+function oneNoteTargetForUser(user: UserRow): { notebook: string; section: string } {
+  const md = getStorageConnectionForUser(user.id, 'onenote')?.metadata ?? {};
+  const notebook = typeof md.notebook === 'string' && md.notebook.trim() ? md.notebook.trim() : DEFAULT_NOTEBOOK_NAME;
+  const section = typeof md.section === 'string' && md.section.trim() ? md.section.trim() : DEFAULT_SECTION_NAME;
+  return { notebook, section };
+}
+
+export function getOneNoteTargetForUser(user: UserRow): { notebook: string; section: string } {
+  return oneNoteTargetForUser(user);
+}
 
 export interface OneNoteStatus {
   connected: boolean;
@@ -21,8 +40,15 @@ export interface OneNoteStatus {
   email?: string | null;
 }
 
+function escapeXml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function markdownToXhtml(markdown: string): string {
-  let html = markdown
+  // Escape the user's raw text FIRST so &, <, > in their content become entities; the markdown
+  // replacements below then add real <h2>/<b>/<p> tags that are not double-escaped. Without
+  // this, content like "me & you <3" produced invalid XHTML and the page write failed.
+  let html = escapeXml(markdown)
     .replace(/^### (.+)$/gm, '<h3>$1</h3>')
     .replace(/^## (.+)$/gm, '<h2>$1</h2>')
     .replace(/^# (.+)$/gm, '<h1>$1</h1>')
@@ -55,8 +81,11 @@ async function getAuthModeForUser(user: UserRow): Promise<{
   getAccessToken: () => Promise<string>;
   refreshAccessToken: () => Promise<string>;
 } | null> {
-  const stored = getStoredMicrosoftConnectionSummary(user.id);
-  if (stored?.connected) {
+  // A connection counts as OAuth only if it actually holds tokens. A metadata-only row
+  // (used to remember the legacy owner's chosen notebook/section) must NOT hijack the auth
+  // path — the owner keeps using their env tokens.
+  const conn = getStorageConnectionForUser(user.id, 'onenote');
+  if (conn && (conn.access_token || conn.refresh_token)) {
     return {
       source: 'user_oauth',
       getAccessToken: () => getValidMicrosoftAccessTokenForUser(user.id),
@@ -116,29 +145,33 @@ async function graphRequestForUser(
   return response;
 }
 
-async function findOrCreateNotebook(user: UserRow): Promise<string> {
+async function findOrCreateNotebook(user: UserRow, notebookName: string): Promise<string> {
   const res = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/notebooks`);
   if (!res.ok) throw new Error(`Failed to list notebooks: ${await res.text()}`);
 
   const data = (await res.json()) as { value: { displayName: string; id: string }[] };
-  const notebook = data.value.find((nb) => nb.displayName === NOTEBOOK_NAME);
+  const notebook = data.value.find((nb) => nb.displayName === notebookName);
 
   if (notebook) return notebook.id;
 
   const createRes = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/notebooks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ displayName: NOTEBOOK_NAME }),
+    body: JSON.stringify({ displayName: notebookName }),
   });
 
   if (!createRes.ok) throw new Error(`Failed to create notebook: ${await createRes.text()}`);
 
   const created = (await createRes.json()) as { id: string };
-  console.log(`[OneNote] Created notebook for user ${user.telegram_id}: ${NOTEBOOK_NAME}`);
+  console.log(`[OneNote] Created notebook for user ${user.telegram_id}: ${notebookName}`);
   return created.id;
 }
 
-async function findOrCreateSection(user: UserRow, notebookId: string): Promise<string> {
+async function findOrCreateSection(
+  user: UserRow,
+  notebookId: string,
+  sectionName: string
+): Promise<string> {
   const res = await graphRequestForUser(
     user,
     `${GRAPH_BASE}/me/onenote/notebooks/${notebookId}/sections`
@@ -146,7 +179,7 @@ async function findOrCreateSection(user: UserRow, notebookId: string): Promise<s
   if (!res.ok) throw new Error(`Failed to list sections: ${await res.text()}`);
 
   const data = (await res.json()) as { value: { displayName: string; id: string }[] };
-  const section = data.value.find((s) => s.displayName === SECTION_NAME);
+  const section = data.value.find((s) => s.displayName === sectionName);
 
   if (section) return section.id;
 
@@ -156,14 +189,14 @@ async function findOrCreateSection(user: UserRow, notebookId: string): Promise<s
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ displayName: SECTION_NAME }),
+      body: JSON.stringify({ displayName: sectionName }),
     }
   );
 
   if (!createRes.ok) throw new Error(`Failed to create section: ${await createRes.text()}`);
 
   const created = (await createRes.json()) as { id: string };
-  console.log(`[OneNote] Created section for user ${user.telegram_id}: ${SECTION_NAME}`);
+  console.log(`[OneNote] Created section for user ${user.telegram_id}: ${sectionName}`);
   return created.id;
 }
 
@@ -213,8 +246,54 @@ async function appendToPage(user: UserRow, pageId: string, htmlContent: string):
 }
 
 async function getSectionId(user: UserRow): Promise<string> {
-  const notebookId = await findOrCreateNotebook(user);
-  return findOrCreateSection(user, notebookId);
+  const { notebook, section } = oneNoteTargetForUser(user);
+  const notebookId = await findOrCreateNotebook(user, notebook);
+  return findOrCreateSection(user, notebookId, section);
+}
+
+/**
+ * Ensure the user's chosen notebook + section exist (creating them if needed). Used after
+ * the user changes their OneNote location, to validate it works and provision it.
+ */
+export async function ensureOneNoteLocationForUser(
+  user: UserRow
+): Promise<{ notebook: string; section: string }> {
+  const { notebook, section } = oneNoteTargetForUser(user);
+  const notebookId = await findOrCreateNotebook(user, notebook);
+  await findOrCreateSection(user, notebookId, section);
+  return { notebook, section };
+}
+
+/**
+ * Create an arbitrary OneNote page (any title/content) in the user's chosen notebook+section.
+ * Powers on-demand requests like "create a test page with something interesting".
+ */
+export async function createOneNotePageForUser(
+  user: UserRow,
+  title: string,
+  markdownContent: string
+): Promise<string | null> {
+  const sectionId = await getSectionId(user);
+  const xhtml = buildPageXhtml(title, markdownContent);
+
+  const res = await graphRequestForUser(user, `${GRAPH_BASE}/me/onenote/sections/${sectionId}/pages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/xhtml+xml' },
+    body: xhtml,
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    if (body.includes('30121') || /SharePoint license/i.test(body) || /tenant does not have/i.test(body)) {
+      throw new Error(ONENOTE_LICENSE_HINT);
+    }
+    throw new Error(`Failed to create OneNote page (${res.status}). ${body.slice(0, 200)}`);
+  }
+
+  const pageData = (await res.json()) as { links?: { oneNoteWebUrl?: { href?: string } } };
+  const webUrl = pageData.links?.oneNoteWebUrl?.href || null;
+  console.log(`[OneNote] Page created for user ${user.telegram_id}: ${title}`);
+  return webUrl;
 }
 
 function buildPageXhtml(title: string, markdownContent: string): string {
@@ -223,7 +302,7 @@ function buildPageXhtml(title: string, markdownContent: string): string {
   return `<!DOCTYPE html>
 <html>
 <head>
-  <title>${title}</title>
+  <title>${escapeXml(title)}</title>
 </head>
 <body>
   ${bodyHtml}
@@ -232,13 +311,16 @@ function buildPageXhtml(title: string, markdownContent: string): string {
 }
 
 export function getOneNoteStatusForUser(user: UserRow): OneNoteStatus {
-  const stored = getStoredMicrosoftConnectionSummary(user.id);
-  if (stored?.connected) {
+  // Token-bearing row = real OAuth connection. A metadata-only row (no tokens) is just stored
+  // settings and must not be reported as an OAuth connection.
+  const conn = getStorageConnectionForUser(user.id, 'onenote');
+  if (conn && (conn.access_token || conn.refresh_token)) {
+    const md = conn.metadata ?? {};
     return {
       connected: true,
       source: 'user_oauth',
-      profileName: stored.profileName,
-      email: stored.email,
+      profileName: typeof md.displayName === 'string' ? md.displayName : undefined,
+      email: typeof md.email === 'string' ? md.email : null,
     };
   }
 

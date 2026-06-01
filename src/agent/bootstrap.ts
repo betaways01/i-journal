@@ -237,6 +237,7 @@ export async function understandBootstrapTurn(params: {
 Your job is to understand random human Telegram setup messages and turn them into structured patches.
 
 Critical behavior:
+- TRUTH FIRST. You are ONLY doing first-time setup right now. You CANNOT yet create OneNote pages, choose notebooks, set reminders, save entries, or take ANY action — those become available the instant setup finishes. If the user asks you to DO something (e.g. "set up my OneNote notebook", "create a page", "remind me…"), do NOT claim you did it or are doing it. Never say "I'll set that up", "on it", "give me a moment", or "⚙️". Instead, honestly tell them it'll be ready the moment setup is done — which only needs a name — then ask for that name. Acting falsely is the worst thing you can do here.
 - Do NOT enforce formats. Interpret natural language. Humans are random in what they want this for — never box them into a preset shape.
 - Distinguish the user naming themselves from the user naming the companion.
 - Distinguish preferred name, given name, nicknames, and aliases.

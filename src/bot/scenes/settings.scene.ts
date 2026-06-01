@@ -132,8 +132,9 @@ async function showSettingsMenu(ctx: Context, userId: string): Promise<void> {
       `Morning: ${profile.morningTime}`,
       `Evening: ${profile.eveningTime}`,
       '',
-      'Areas:',
-      formatAreas(profile.sections),
+      profile.sections.length > 0
+        ? `Areas:\n${formatAreas(profile.sections)}`
+        : "Areas: none yet — I'll learn what matters as you write.",
       '',
       'Automations:',
       automationLines.length > 0 ? automationLines.join('\n') : 'None yet.',

@@ -9,7 +9,11 @@ import {
   getOneNoteStatusForUser,
   writeMorningToOneNoteForUser,
   writeEveningToOneNoteForUser,
+  getOneNoteTargetForUser,
+  ensureOneNoteLocationForUser,
+  createOneNotePageForUser,
 } from '../onenote/writer';
+import { mergeStorageMetadataForUser, upsertStorageConnectionForUser } from '../db/storageConnections.repo';
 import { buildMicrosoftAuthUrlForUser } from '../onenote/auth';
 import { hasMicrosoftOAuthConfigured } from '../config';
 import { saveProfileForUser } from '../db/profile.repo';
@@ -375,11 +379,65 @@ function runRenameCompanion(deps: CompanionToolDeps, input: Record<string, unkno
   return `Done — your companion is now named "${identity.name}".`;
 }
 
+async function runSetOneNoteLocation(deps: CompanionToolDeps, input: Record<string, unknown>): Promise<string> {
+  const notebook = str(input, 'notebook');
+  const section = str(input, 'section');
+  if (!notebook && !section) {
+    return 'Error: provide a notebook and/or section name.';
+  }
+  if (!getOneNoteStatusForUser(deps.botUser.row).connected) {
+    return 'OneNote is not connected for this account yet — connect it from /storage first, then I can set the notebook/section.';
+  }
+
+  const prev = getOneNoteTargetForUser(deps.botUser.row);
+  const patch: Record<string, unknown> = {};
+  if (notebook) patch.notebook = notebook;
+  if (section) patch.section = section;
+
+  // Persist on the connection metadata. For a legacy env-token owner with no stored row,
+  // create a metadata-only row (no tokens — auth still uses the env tokens) so their location
+  // is remembered too. This works for every connected user, not just OAuth ones.
+  const updated =
+    mergeStorageMetadataForUser(deps.botUser.row.id, 'onenote', patch) ??
+    upsertStorageConnectionForUser({ userId: deps.botUser.row.id, provider: 'onenote', metadata: patch });
+  if (!updated) {
+    return "Couldn't set the location right now. Try reconnecting OneNote from /storage.";
+  }
+
+  // Validate + provision the chosen notebook/section. If it can't be reached, revert so we
+  // never leave a broken target behind.
+  try {
+    const target = await ensureOneNoteLocationForUser(deps.botUser.row);
+    return `OneNote location set: notebook "${target.notebook}" → section "${target.section}". Entries and pages will go there now.`;
+  } catch (err) {
+    mergeStorageMetadataForUser(deps.botUser.row.id, 'onenote', {
+      notebook: prev.notebook,
+      section: prev.section,
+    });
+    const msg = err instanceof Error ? err.message : String(err);
+    return `Couldn't set that OneNote location: ${msg}`;
+  }
+}
+
+async function runCreateOneNotePage(deps: CompanionToolDeps, input: Record<string, unknown>): Promise<string> {
+  const content = str(input, 'content');
+  if (!content) return 'Error: content is required — what should the page say?';
+  const title = str(input, 'title') ?? 'Note';
+  if (!getOneNoteStatusForUser(deps.botUser.row).connected) {
+    return 'OneNote is not connected for this account yet — connect it from /storage first.';
+  }
+
+  const url = await createOneNotePageForUser(deps.botUser.row, title, content);
+  const target = getOneNoteTargetForUser(deps.botUser.row);
+  return `Created OneNote page "${title}" in "${target.notebook}" → "${target.section}".${url ? ` Link: ${url}` : ''}`;
+}
+
 function runOneNoteStatus(deps: CompanionToolDeps): string {
   const status = getOneNoteStatusForUser(deps.botUser.row);
   if (status.connected) {
     const who = status.profileName ? ` (connected as ${status.profileName})` : '';
-    return `OneNote is connected${who}. Morning and evening entries sync automatically.`;
+    const target = getOneNoteTargetForUser(deps.botUser.row);
+    return `OneNote is connected${who}. Saving to notebook "${target.notebook}" → section "${target.section}". Morning/evening entries sync automatically; ask me anytime to change the notebook or section.`;
   }
   if (hasMicrosoftOAuthConfigured()) {
     let link: string;
@@ -571,6 +629,37 @@ export function buildCompanionTools(deps: CompanionToolDeps): {
         input_schema: { type: 'object', properties: {} },
       },
       run: async () => runOneNoteStatus(deps),
+    },
+    {
+      definition: {
+        name: 'set_onenote_location',
+        description:
+          "Choose WHICH OneNote notebook and section the journal saves into — e.g. \"journal into my 'mygreatlifestyle' notebook, section 'i-journal'\". Creates them if they don't exist. The user's own words, not a fixed location. Requires OneNote connected.",
+        input_schema: {
+          type: 'object',
+          properties: {
+            notebook: { type: 'string', description: 'Notebook name to use or create.' },
+            section: { type: 'string', description: 'Section name to use or create.' },
+          },
+        },
+      },
+      run: (input) => runSetOneNoteLocation(deps, input),
+    },
+    {
+      definition: {
+        name: 'create_onenote_page',
+        description:
+          "Create a OneNote page with a title and content in the user's current notebook/section. Use for explicit requests like \"create a test page with something interesting\" or to drop a specific note into OneNote (this is separate from saving a journal entry). Requires OneNote connected.",
+        input_schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Page title.' },
+            content: { type: 'string', description: 'Page body. Markdown is fine.' },
+          },
+          required: ['content'],
+        },
+      },
+      run: (input) => runCreateOneNotePage(deps, input),
     },
     {
       definition: {

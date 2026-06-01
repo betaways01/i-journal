@@ -232,7 +232,7 @@ Current local date/time for the user: ${localNow}
 Timezone: ${profile.timezone}
 Default morning time: ${profile.morningTime}
 Default evening time: ${profile.eveningTime}
-User areas: ${profile.sections.map((section) => section.title).join(', ')}
+User areas: ${profile.sections.map((section) => section.title).join(', ') || 'none specified'}
 
 Return ONLY valid JSON:
 {

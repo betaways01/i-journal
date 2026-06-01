@@ -201,7 +201,9 @@ export function makeProfile(params: {
 }): Profile {
   const profile = getDefaultProfile();
   profile.name = params.name;
-  profile.sections = params.sections.length > 0 ? params.sections : defaultAreaSections();
+  // Respect what the user actually gave — even nothing. Don't impose preset areas; the
+  // companion learns areas as the user journals. (Empty is fine everywhere downstream.)
+  profile.sections = params.sections;
   profile.morningTime = params.morningTime;
   profile.eveningTime = params.eveningTime;
   profile.timezone = config.timezone;
@@ -216,16 +218,17 @@ export function formatAreas(sections: ProfileSection[]): string {
 }
 
 export function formatProfileCard(profile: Profile): string {
+  const areaLines = profile.sections.length > 0
+    ? ["I'll keep an eye on:", formatAreas(profile.sections)]
+    : ["No fixed areas — I'll pick up what matters as you write. Tell me anytime to track something."];
+
   return [
-    `You're set up, ${profile.name}.`,
+    `You're set, ${profile.name}.`,
     '',
-    "I'll keep track of:",
-    formatAreas(profile.sections),
+    ...areaLines,
     '',
-    `Morning check-in: ${profile.morningTime}`,
-    `Evening journal: ${profile.eveningTime}`,
-    `Timezone: ${profile.timezone}`,
+    `I'll check in around ${profile.morningTime} and ${profile.eveningTime} — say the word to change those, or to turn them off.`,
     '',
-    'Entries save to the private app database first. OneNote backup is optional from /storage.',
+    'Entries save to the private app database first. OneNote backup is optional from /storage. Just talk to me — I can journal, remember things, set reminders or routines, and more.',
   ].join('\n');
 }

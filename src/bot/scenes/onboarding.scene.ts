@@ -104,7 +104,6 @@ function setBootstrapState(
 
 function finalSummary(draft: BootstrapDraft): string {
   const name = preferredName(draft.userIdentity);
-  const areas = draft.areas.length > 0 ? draft.areas : defaultAreaSections();
   const morningTime = draft.morningTime ?? DEFAULT_MORNING_TIME;
   const eveningTime = draft.eveningTime ?? DEFAULT_EVENING_TIME;
   const nicknames = draft.userIdentity.nicknames.length
@@ -114,6 +113,10 @@ function finalSummary(draft: BootstrapDraft): string {
     ? `\nOther names/aliases: ${draft.userIdentity.aliases.join(', ')}`
     : '';
   const agentName = draft.agentIdentity.name ? `\nCompanion name: ${draft.agentIdentity.name}` : '';
+  // Only show areas the user actually named — never impose a preset list.
+  const areasBlock = draft.areas.length > 0
+    ? ['', 'Areas to keep in mind:', formatAreas(draft.areas)]
+    : ['', "Areas: none fixed — I'll learn what matters as you write (you can add some anytime)."];
   const routines = draft.routineProposals.length > 0
     ? [
         '',
@@ -126,15 +129,12 @@ function finalSummary(draft: BootstrapDraft): string {
     'Here is what I understand so far:',
     '',
     `I should call you: ${name}${nicknames}${aliases}${agentName}`,
+    ...areasBlock,
     '',
-    'Life areas:',
-    formatAreas(areas),
-    '',
-    `Morning check-in: ${morningTime}`,
-    `Evening journal: ${eveningTime}`,
+    `Check-ins around ${morningTime} and ${eveningTime} (change or turn off anytime).`,
     routines,
     '',
-    'If I missed a person, rhythm, weak spot, or routine, choose Keep adjusting and tell me naturally.',
+    'Tap below to start, or Keep adjusting to tell me more — a person, a rhythm, anything.',
   ].join('\n');
 }
 
@@ -158,7 +158,8 @@ async function showFinalConfirmation(ctx: Context, userId: string, draft: Bootst
 function draftToProfile(draft: BootstrapDraft) {
   return makeProfile({
     name: preferredName(draft.userIdentity),
-    sections: draft.areas.length > 0 ? draft.areas : defaultAreaSections(),
+    // Only what they actually named — no imposed buckets. Empty is fine; areas are learned.
+    sections: draft.areas,
     morningTime: draft.morningTime ?? DEFAULT_MORNING_TIME,
     eveningTime: draft.eveningTime ?? DEFAULT_EVENING_TIME,
   });
