@@ -19,7 +19,7 @@ import { registerUserFromContext, loadBotUser } from '../userContext';
 import { hasMicrosoftOAuthConfigured } from '../../config';
 import { buildMicrosoftAuthUrlForUser } from '../../onenote/auth';
 import { getOneNoteStatusForUser } from '../../onenote/writer';
-import { QUICK_ACTIONS, STATUS_ACTIONS, POST_SAVE_ACTIONS } from '../keyboards';
+import { QUICK_ACTIONS, STATUS_ACTIONS } from '../keyboards';
 
 async function ensureOnboardedOrGuide(
   ctx: Context,
@@ -320,6 +320,13 @@ export function registerCommands(bot: Telegraf): void {
 
     if (!oneNote.connected) {
       lines.push('', '_Your entries are still safe locally even without cloud sync._');
+    }
+
+    if (oauthReady && !oneNote.connected) {
+      lines.push(
+        '',
+        '👉 When you connect, sign in with the Microsoft account whose OneNote you actually use. I check the connection right away — if it cannot reach OneNote, I will tell you, and your entries stay safe locally regardless.'
+      );
     }
 
     if (!oauthReady) {

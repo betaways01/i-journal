@@ -78,13 +78,26 @@ export const config = {
   },
   anthropic: {
     apiKey: requireEnv('ANTHROPIC_API_KEY'),
-    model: 'claude-sonnet-4-20250514' as const,
-    maxTokens: 1024,
+    // Current Sonnet — far stronger at following instructions and using tools than the
+    // original sonnet-4-20250514, which is the root of the "not helpful / too literal" feel.
+    // Override with ANTHROPIC_MODEL if needed.
+    model: optionalEnv('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+    // Room for a full compiled journal entry plus a natural reply. The old 1024 cap
+    // clipped responses mid-thought.
+    maxTokens: optionalIntEnv('ANTHROPIC_MAX_TOKENS', 2048),
   },
   microsoft: {
     clientId: optionalEnv('MICROSOFT_CLIENT_ID'),
     clientSecret: optionalEnv('MICROSOFT_CLIENT_SECRET'),
-    tenantId: optionalEnv('MICROSOFT_TENANT_ID', 'common'),
+    // Microsoft sign-in authority. 'common' supports BOTH personal (outlook/hotmail/live) and
+    // work/school accounts, so the user can connect whichever account's OneNote actually works.
+    // (Graph OneNote can fail for either type — the "Tenant does not have a SPO license" error
+    // is about license/provisioning/auth-context, NOT account type; work/school is often the
+    // more reliable path.) The app probes the connection at connect time and falls back to
+    // local saving on failure. If a personal account is wrongly treated as an org guest and hits
+    // the SPO-license error, setting MICROSOFT_TENANT_ID=consumers (with the Azure app reg
+    // allowing personal accounts) is a known fix for that specific case.
+    tenantId: optionalEnv('MICROSOFT_TENANT_ID', 'common') || 'common',
     redirectUri: optionalEnv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback'),
     accessToken: optionalEnv('MICROSOFT_ACCESS_TOKEN'),
     refreshToken: optionalEnv('MICROSOFT_REFRESH_TOKEN'),

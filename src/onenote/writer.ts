@@ -4,6 +4,7 @@ import {
   getValidMicrosoftAccessTokenForUser,
   refreshLegacyOwnerAccessToken,
   refreshMicrosoftAccessTokenForUser,
+  ONENOTE_LICENSE_HINT,
 } from './auth';
 import { hasLegacyOwnerOneNoteConfigured } from '../config';
 import { deleteStorageConnectionForUser } from '../db/storageConnections.repo';
@@ -279,13 +280,29 @@ export async function testOneNoteConnectionForUser(user: UserRow): Promise<{
   displayName: string;
   email: string | null;
 }> {
+  // Real test: can we actually reach OneNote NOTEBOOKS — not just the profile? The old
+  // check only hit /me, which succeeds for any account, so it reported "looks good" even
+  // when every save would fail with the SharePoint-license error.
+  const notebooksRes = await graphRequestForUser(
+    user,
+    `${GRAPH_BASE}/me/onenote/notebooks?$top=1`
+  );
+
+  if (!notebooksRes.ok) {
+    const body = await notebooksRes.text();
+    if (body.includes('30121') || /SharePoint license/i.test(body) || /tenant does not have/i.test(body)) {
+      throw new Error(ONENOTE_LICENSE_HINT);
+    }
+    throw new Error(`OneNote isn't reachable right now (${notebooksRes.status}). ${body.slice(0, 200)}`);
+  }
+
   const res = await graphRequestForUser(
     user,
     `${GRAPH_BASE}/me?$select=displayName,mail,userPrincipalName`
   );
 
   if (!res.ok) {
-    throw new Error(`Failed to verify OneNote connection: ${await res.text()}`);
+    throw new Error(`Failed to read your Microsoft profile: ${await res.text()}`);
   }
 
   const data = (await res.json()) as {

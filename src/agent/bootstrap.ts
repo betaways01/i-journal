@@ -6,7 +6,7 @@ import {
   BootstrapRoutineProposal,
   BootstrapUnderstandingResult,
 } from './types';
-import { parseAreaSections, parseTime } from '../bot/scenes/setup.helpers';
+import { sectionsFromDiscreteLabels, parseTime } from '../bot/scenes/setup.helpers';
 
 function unique(values: string[]): string[] {
   const seen = new Set<string>();
@@ -35,53 +35,6 @@ function safeTime(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const parsed = parseTime(value);
   return parsed ?? undefined;
-}
-
-function compactAreaLabel(value: string): string | null {
-  const cleaned = value.trim();
-  if (!cleaned) return null;
-  const lower = cleaned.toLowerCase();
-
-  if (/\b(work|freelanc|client|business|career|project|payment|api|code|build)\b/.test(lower)) {
-    return 'Work';
-  }
-  if (/\b(family|wife|husband|kid|child|children|son|daughter|hilda|tavana|reign|home)\b/.test(lower)) {
-    return 'Family';
-  }
-  if (/\bgod\s+(?:and|&)\s+ministry\b/.test(lower)) {
-    return 'God & Ministry';
-  }
-  if (/\bgod\b/.test(lower)) {
-    return 'God';
-  }
-  if (/\bfaith\b/.test(lower)) {
-    return 'Faith';
-  }
-  if (/\b(ministry|prayer|church|scripture|word study|fasting|spiritual)\b/.test(lower)) {
-    return 'God & Ministry';
-  }
-  if (/^personal(?:\s+life)?$/i.test(cleaned.replace(/[.!?]+$/g, '').trim())) {
-    return 'Personal';
-  }
-  if (/\b(personal|growth|improvement|goal|goals|self|habit)\b/.test(lower)) {
-    return 'Personal Growth';
-  }
-  if (/\b(learn|study|school|reading|word|vocabulary)\b/.test(lower)) {
-    return 'Learning';
-  }
-  if (/\b(health|fitness|body|sleep|food|exercise)\b/.test(lower)) {
-    return 'Health';
-  }
-  if (/\b(money|finance|financial|budget|saving)\b/.test(lower)) {
-    return 'Money';
-  }
-
-  const simple = cleaned
-    .replace(/\s+/g, ' ')
-    .replace(/[.!?]+$/g, '');
-  if (/[-:()]/.test(simple)) return null;
-  if (simple.split(' ').length > 3) return null;
-  return simple;
 }
 
 function extractDurableSetupDetails(text?: string): string[] {
@@ -116,15 +69,13 @@ function extractJsonObject(text: string): Record<string, unknown> | null {
 function normalizeRoutine(raw: unknown): BootstrapRoutineProposal | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
-  const kindRaw = safeString(obj.kind);
-  const kind = kindRaw === 'learning.word_of_day' || kindRaw === 'agent.custom_prompt'
-    ? kindRaw
-    : null;
   const name = safeString(obj.name);
-  if (!kind || !name) return null;
+  if (!name) return null;
 
+  // Every routine is an AI-generated custom prompt now — there are no hardcoded routine
+  // types, so the user can ask for any recurring message and we compose it fresh.
   return {
-    kind,
+    kind: 'agent.custom_prompt',
     name,
     time: safeTime(obj.time),
     goal: safeString(obj.goal),
@@ -218,21 +169,10 @@ export function mergeBootstrapPatch(draft: BootstrapDraft, patch: BootstrapPatch
   if (patch.agentIdentity?.emoji) next.agentIdentity.emoji = patch.agentIdentity.emoji;
 
   if (patch.areas && patch.areas.length > 0) {
-    const existing = next.areas.map((area) => area.title).join(', ');
-    const compactedRaw = patch.areas
-      .map(compactAreaLabel)
-      .filter((area): area is string => Boolean(area));
-    const compacted = compactedRaw.includes('God & Ministry')
-      ? compactedRaw.filter((area) => area !== 'God' && area !== 'Faith')
-      : compactedRaw;
-    const detailedAsNotes = patch.areas
-      .filter((area) => {
-        const compactedArea = compactAreaLabel(area);
-        return compactedArea !== null && compactedArea.toLowerCase() !== area.trim().toLowerCase();
-      })
-      .map((area) => `Setup detail: ${area.trim()}`);
-    next.areas = parseAreaSections(unique([existing, ...compacted]).filter(Boolean).join(', '));
-    next.notes = unique([...next.notes, ...detailedAsNotes]).slice(-20);
+    // Areas are whatever the user names — their words, not preset buckets. The AI already
+    // returns them as discrete labels, so map each one straight to a section without
+    // re-splitting on "and"/"/" (which would shred "Rest and recovery" into two areas).
+    next.areas = sectionsFromDiscreteLabels([...next.areas.map((area) => area.title), ...patch.areas]);
   }
 
   if (patch.morningTime) next.morningTime = patch.morningTime;
@@ -267,16 +207,15 @@ const BOOTSTRAP_SCHEMA = `Return ONLY valid JSON with this shape:
       "vibe": "only if user describes companion vibe",
       "emoji": "only if user chooses one"
     },
-    "areas": ["life areas to remember"],
-    "morningTime": "HH:MM if stated or inferable",
-    "eveningTime": "HH:MM if stated or inferable",
+    "areas": ["life areas in the user's OWN words — optional, omit if none given"],
+    "morningTime": "HH:MM if the user wants a morning check-in (optional)",
+    "eveningTime": "HH:MM if the user wants an evening journal (optional)",
     "routineProposals": [
       {
-        "kind": "agent.custom_prompt for almost every user-specific routine; learning.word_of_day only for an exact word-of-day request",
         "name": "routine name",
         "time": "HH:MM if stated",
         "goal": "why they want it",
-        "prompt": "for custom prompt routines"
+        "prompt": "what to generate and send each time"
       }
     ],
     "notes": ["small durable preferences"]
@@ -298,24 +237,21 @@ export async function understandBootstrapTurn(params: {
 Your job is to understand random human Telegram setup messages and turn them into structured patches.
 
 Critical behavior:
-- Do NOT enforce formats. Interpret natural language.
+- Do NOT enforce formats. Interpret natural language. Humans are random in what they want this for — never box them into a preset shape.
 - Distinguish the user naming themselves from the user naming the companion.
 - Distinguish preferred name, given name, nicknames, and aliases.
-- Treat areas as broad top-level buckets only. Details about wife/kids/projects/rhythms belong in notes, not areas.
-- Good areas: Work, Family, God, God & Ministry, Faith, Personal, Personal Growth, Health, Learning, Money.
-- Bad areas: "Family - wife Hilda", "Tavana (4)", "Sunday Church", "Word Study", "Payment features". Put those details in notes.
+- Areas are whatever the user actually cares about — use THEIR words. Do NOT force them into preset buckets. "Woodworking", "Recovery", "My startup's metrics", "Mum's health", "Music" are all valid areas if that's what they say. A person may have one area, ten, or none.
+- Keep area labels short (a word or short phrase). Put fine detail (specific people, ages, numbers, one-off facts) in notes, not in the area label.
 - If user says "King Kang, or sometime Francis", infer preferredName "King Kang" and alias "Francis"; ask a light confirmation in assistantReply if uncertain.
 - If user says "My name is Hilda but call me Hils", infer givenName "Hilda", preferredName "Hils", nicknames ["Hils"].
 - If user says "Call yourself Nia", update agentIdentity.name, not userIdentity.
 - If user says "Looks right, change your name to Frankie", treat it as a correction before completion: patch agentIdentity.name and set readyToComplete true, but do not say it was saved yet.
 - Interpret times flexibly. "9.30" means 09:30 unless labeled evening/night, then 21:30 can be appropriate. "8.30 evening" means 20:30.
-- If only one check-in time is present, patch only the clear one.
-- Ask one natural next question at a time in assistantReply.
-- Do not rush setup. If the user gives rich life details, warmly acknowledge and leave space for more: they may add more areas, people, rhythms, routines, or start.
-- If enough setup facts are known, set readyToComplete true and make assistantReply a warm confirmation invitation.
-- Missing should only include fields still truly needed: identity, areas, times.
-- Treat user-specific recurring wishes as routineProposals. Examples: motivation, scripture, business review, habit check, prayer nudge, language practice, family prompt.
-- Prefer kind "agent.custom_prompt" so the runtime can adapt to the user's wording instead of relying on hardcoded routine buttons.
+- Times and areas are OPTIONAL. Some people don't want scheduled check-ins or don't think in "areas" — that's fine. Patch only what they actually give; never demand them.
+- The ONLY thing truly needed to finish setup is something to call them (a name). As soon as you know that, you may set readyToComplete true with a warm invitation to start. Do NOT interrogate for areas or times — they can be added later just by talking.
+- Ask one natural next question at a time in assistantReply, and only if it genuinely helps.
+- 'missing' should list ONLY genuinely-unknown essentials — at most 'identity' when you still don't have a name. Do NOT put 'areas' or 'times' in 'missing'; they are optional.
+- Treat user-specific recurring wishes as routineProposals — ANY recurring message they want: motivation, scripture, business review, habit check, prayer nudge, language practice, family prompt, a weekly review, whatever. There are no fixed routine types; the runtime generates each one fresh from your wording.
 
 Workspace context:
 ${params.workspaceContext}

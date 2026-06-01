@@ -106,14 +106,46 @@ export function parseAreaSections(text: string): ProfileSection[] {
   return sections.slice(0, 8);
 }
 
-function normalizeTime(hourRaw: number, minute: number, context: string, assumeEvening = false): string | null {
+/**
+ * Map labels that are ALREADY separated (an array, e.g. the AI's areas[] or a tool's
+ * add_areas[]) to ProfileSections WITHOUT re-tokenizing. Unlike parseAreaSections, this does
+ * not split on "and" / "/" / ";", so a free-form label like "Rest and recovery" or "Work/Life"
+ * stays one area — the user's own words, not shredded into preset buckets.
+ */
+export function sectionsFromDiscreteLabels(labels: string[]): ProfileSection[] {
+  const seen = new Set<string>();
+  const sections: ProfileSection[] = [];
+
+  for (const raw of labels) {
+    const cleaned = raw.trim().replace(/\s+/g, ' ').replace(/[.,;]+$/, '').slice(0, 120);
+    if (!cleaned) continue;
+    const title = titleCase(cleaned);
+    const key = normalizeKey(title);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sections.push({ key, emoji: EMOJI_BY_KEY[key] ?? '📝', title });
+  }
+
+  return sections.slice(0, 8);
+}
+
+function normalizeTime(
+  hourRaw: number,
+  minute: number,
+  context: string,
+  assumeEvening = false,
+  meridiem?: string
+): string | null {
   let hour = hourRaw;
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
   if (minute < 0 || minute > 59) return null;
 
+  // An explicit am/pm (even with no space, e.g. "9pm") takes priority over the word-boundary
+  // heuristic, which can't see "pm" glued to a digit.
+  const m = meridiem?.toLowerCase();
   const lower = context.toLowerCase();
-  const isMorning = /\b(am|morning|dawn)\b/.test(lower);
-  const isEvening = assumeEvening || /\b(pm|evening|night|tonight|journal)\b/.test(lower);
+  const isMorning = m === 'am' || (!m && /\b(am|morning|dawn)\b/.test(lower));
+  const isEvening = m === 'pm' || assumeEvening || (!m && /\b(pm|evening|night|tonight|journal)\b/.test(lower));
 
   if (isMorning) {
     if (hour === 12) hour = 0;
@@ -132,7 +164,7 @@ export function parseTime(text: string): string | null {
 
   const hour = Number.parseInt(match[1], 10);
   const minute = match[2] ? Number.parseInt(match[2], 10) : 0;
-  return normalizeTime(hour, minute, trimmed);
+  return normalizeTime(hour, minute, trimmed, false, match[3]);
 }
 
 export function parseTwoTimes(text: string): { morningTime: string; eveningTime: string } | null {

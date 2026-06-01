@@ -21,6 +21,13 @@ process.env.DB_PATH = path.join(tmpDir, 'smoke.db');
 process.env.TIMEZONE = 'Africa/Nairobi';
 process.env.ANTHROPIC_API_KEY = 'smoke-fake-key';
 process.env.TELEGRAM_BOT_TOKEN = 'smoke-fake-token';
+// Keep the smoke run hermetic: never inherit real OneNote tokens from .env, so the
+// save_journal_entry tool never reaches the live Microsoft Graph API. (dotenv does not
+// override keys that are already set, so setting these empty blocks .env values.)
+process.env.MICROSOFT_ACCESS_TOKEN = '';
+process.env.MICROSOFT_REFRESH_TOKEN = '';
+process.env.MICROSOFT_CLIENT_ID = '';
+process.env.MICROSOFT_CLIENT_SECRET = '';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getDb, closeDb } = require('../src/db') as typeof import('../src/db');
@@ -51,13 +58,11 @@ const {
   startRoutineRun,
   finishRoutineRun,
   updateRoutine,
+  listRoutinesForUser,
 } = require('../src/db/routines.repo') as typeof import('../src/db/routines.repo');
 const {
   computeNextRunAt,
 } = require('../src/routines/schedule') as typeof import('../src/routines/schedule');
-const {
-  runRoutineSkill,
-} = require('../src/routines/skills') as typeof import('../src/routines/skills');
 const {
   setSessionForUser,
   getSessionForUser,
@@ -81,6 +86,7 @@ const {
   parseName,
   parseAreaSections,
   parseTwoTimes,
+  parseTime,
   makeProfile,
 } = require('../src/bot/scenes/setup.helpers') as typeof import('../src/bot/scenes/setup.helpers');
 
@@ -232,8 +238,16 @@ async function run(): Promise<void> {
     'no hardcoded "he goes before you" in persona'
   );
   assert(
-    cacheableCore.includes('Never use the phrases'),
+    cacheableCore.includes('Vary your openings'),
     'persona explicitly forbids templated openers'
+  );
+  assert(
+    cacheableCore.includes('IRON RULE OF TRUTH'),
+    'persona carries the tool-truthfulness contract'
+  );
+  assert(
+    cacheableCore.includes('save_journal_entry'),
+    'persona instructs saving via the save_journal_entry tool'
   );
   assert(volatileContext.includes('SYSTEM FACTS'), 'volatile block contains system facts');
   assert(volatileContext.includes('Storage:'), 'volatile block contains storage truth');
@@ -319,33 +333,23 @@ async function run(): Promise<void> {
   draft = mergeBootstrapPatch(draft, agentNameUnderstanding.patch, 'Call yourself Nia');
   assert(draft.agentIdentity.name === 'Nia', 'bootstrap distinguishes agent name from user name');
 
-  const detailedAreas = normalizeBootstrapUnderstanding({
-    assistantReply: 'I will keep the big buckets clean and remember the details.',
-    patch: {
-      areas: [
-        'Work - Freelancer',
-        'Family - Wife Hilda',
-        'Tavana (4)',
-        'Reign (2)',
-        'Ministry - Daily Morning Prayer',
-        'Word Study',
-        'Sunday Church',
-        'Personal stuff. Improvement, goals etc',
-      ],
-    },
+  // Areas are FREE-FORM now — the user's own words, never forced into preset buckets.
+  // (This deliberately replaces the old "compact into Work/Family/God&Ministry" test.)
+  const freeformAreas = normalizeBootstrapUnderstanding({
+    assistantReply: 'Got it — your words, not my buckets.',
+    patch: { areas: ['Woodworking', 'Rest and recovery', 'My startup metrics', 'Faith'] },
     confidence: 0.9,
     needsConfirmation: true,
     readyToComplete: false,
     missing: [],
   });
-  const compactDraft = mergeBootstrapPatch(emptyBootstrapDraft(), detailedAreas.patch);
-  const compactTitles = compactDraft.areas.map((area) => area.title);
-  assert(compactTitles.includes('Work'), 'detailed work setup compacts to Work');
-  assert(compactTitles.includes('Family'), 'family details compact to Family');
-  assert(compactTitles.includes('God & Ministry'), 'faith/ministry details compact to God & Ministry');
-  assert(compactTitles.includes('Personal Growth'), 'personal goals compact to Personal Growth');
-  assert(!compactTitles.includes('Tavana (4)'), 'child detail is not a top-level area');
-  assert(compactDraft.notes.some((note) => note.includes('Tavana')), 'child detail preserved as memory note');
+  const freeDraft = mergeBootstrapPatch(emptyBootstrapDraft(), freeformAreas.patch);
+  const freeTitles = freeDraft.areas.map((area) => area.title);
+  assert(freeTitles.includes('Woodworking'), 'free-form area "Woodworking" is preserved, not bucketed');
+  assert(freeTitles.some((t) => t.toLowerCase() === 'rest and recovery'), '"Rest and recovery" stays ONE area (not split on "and")');
+  assert(!freeTitles.includes('Rest'), 'area is not shredded into "Rest" + "Recovery"');
+  assert(freeTitles.some((t) => t.toLowerCase().includes('startup')), 'multi-word free-form area is preserved');
+  assert(!freeTitles.includes('Work'), 'areas are NOT collapsed into a preset "Work" bucket');
 
   updateAgentIdentityForUser(userRow.id, { name: 'Frankie' });
   assert(readAgentIdentity(userRow.id).name === 'Frankie', 'agent identity update persists to workspace');
@@ -427,66 +431,116 @@ async function run(): Promise<void> {
 
   const routine = createRoutine({
     userId: userRow.id,
-    kind: 'learning.word_of_day',
+    kind: 'agent.custom_prompt',
     name: 'Daily conversation word',
     schedule,
-    config: { goal: 'improve daily conversations' },
+    config: { prompt: 'Teach a useful word with meaning and an example' },
     nextRunAt: new Date(Date.now() - 60_000),
   });
-  const foundRoutine = findRoutineForUserByKind(userRow.id, 'learning.word_of_day');
+  const foundRoutine = findRoutineForUserByKind(userRow.id, 'agent.custom_prompt');
   assert(foundRoutine?.id === routine.id, 'routine can be found by user + kind');
   const dueRoutines = getDueRoutines(new Date());
   assert(dueRoutines.some((r) => r.id === routine.id), 'due routine is returned by sweeper query');
-  const skillResult = await runRoutineSkill({ routine, profile: loaded! });
-  assert(skillResult.messages[0].includes('Word for today'), 'word-of-day skill creates Telegram message');
-  assert(typeof skillResult.configUpdate?.lastWordIndex === 'number', 'word-of-day skill advances cursor');
+  // Routine content is AI-generated now (no hardcoded word list), so the skill itself needs
+  // the network — exercise scheduling/run-tracking here, not generation.
   const runId = startRoutineRun(routine);
-  finishRoutineRun({ runId, status: 'success', outputSummary: skillResult.outputSummary });
+  finishRoutineRun({ runId, status: 'success', outputSummary: routine.name });
   const updatedRoutine = updateRoutine(routine.id, {
-    config: skillResult.configUpdate,
     nextRunAt: nextTomorrow,
     lastRunAt: new Date(),
   });
   assert(updatedRoutine?.next_run_at === nextTomorrow.toISOString(), 'routine next_run_at updates after run');
 
-  section('Response parsing — entry heading detection (tightened regex)');
-  const ENTRY_HEADING_RE = /^##\s+[^a-zA-Z\n]+\s*(Morning|Evening|Drop)\s*$/m;
-  assert(ENTRY_HEADING_RE.test('## 🌙 Evening\n\nbody'), 'detects "## 🌙 Evening"');
-  assert(ENTRY_HEADING_RE.test('## ☀️ Morning\n\nbody'), 'detects "## ☀️ Morning"');
-  assert(ENTRY_HEADING_RE.test('## 📝 Drop\n\nbody'), 'detects "## 📝 Drop"');
-  assert(ENTRY_HEADING_RE.test('intro text\n\n## 🌙 Evening\nbody'), 'detects mid-response');
-  assert(!ENTRY_HEADING_RE.test('Good morning! How was your evening?'), 'does not false-positive on prose');
-  assert(!ENTRY_HEADING_RE.test('## Random heading'), 'does not match unrelated `##` headings');
-  // Regression cases — prose sentences the AI might actually produce
-  assert(!ENTRY_HEADING_RE.test('## How was your Morning'), 'regression: prose "## How was your Morning" rejected');
-  assert(!ENTRY_HEADING_RE.test('## Remember to Drop your tension'), 'regression: "## Remember to Drop..." rejected');
-  assert(!ENTRY_HEADING_RE.test('## Tonight — Evening thoughts'), 'regression: "## Tonight — Evening thoughts" rejected');
-
-  section('Settings update parsing');
-  const sampleResponse = `Alright, switching your morning check-ins to 7am.\n\n[SETTINGS_UPDATE]\n\`\`\`json\n{ "morningTime": "07:00" }\n\`\`\``;
-  const markerIdx = sampleResponse.indexOf('[SETTINGS_UPDATE]');
-  assert(markerIdx > 0, 'settings marker detected');
-  const jsonMatch = sampleResponse.slice(markerIdx).match(/```json\s*([\s\S]*?)```/);
-  assert(jsonMatch !== null, 'json block extracted from settings block');
-  const parsedUpdate = JSON.parse(jsonMatch![1]);
-  assert(parsedUpdate.morningTime === '07:00', 'parsed morningTime = 07:00');
-  assert(/^\d{2}:\d{2}$/.test(parsedUpdate.morningTime), 'morningTime format validated');
-
-  const beforeMarker = sampleResponse.slice(0, markerIdx).trim();
-  assert(beforeMarker === 'Alright, switching your morning check-ins to 7am.', 'natural reply preserved before marker');
-
-  section('Profile extraction handles malformed JSON gracefully');
-  const badResponse = `Here's your setup.\n\n[PROFILE_COMPLETE]\n\`\`\`json\n{ "name": "Oops, broken\n\`\`\``;
-  let parsedBad: unknown = null;
-  const badJsonMatch = badResponse.slice(badResponse.indexOf('[PROFILE_COMPLETE]')).match(/```json\s*([\s\S]*?)```/);
-  if (badJsonMatch) {
-    try {
-      parsedBad = JSON.parse(badJsonMatch[1]);
-    } catch {
-      // expected
-    }
+  section('Companion toolset — the agent\'s real hands');
+  const { buildCompanionTools } = require('../src/agent/tools') as typeof import('../src/agent/tools');
+  const botUser = { row: userRow, telegramId: userRow.telegram_id, profile: loaded!, isOwner: true };
+  const { tools, effects } = buildCompanionTools({
+    botUser,
+    sessionMode: 'evening',
+    sessionDate: new Date(),
+  });
+  const toolNames = tools.map((t) => t.definition.name);
+  for (const expected of [
+    'save_journal_entry',
+    'remember',
+    'set_reminder',
+    'set_routine',
+    'update_schedule',
+    'update_profile',
+    'rename_companion',
+    'onenote_status',
+    'look_up_entries',
+  ]) {
+    assert(toolNames.includes(expected), `tool present: ${expected}`);
   }
-  assert(parsedBad === null, 'malformed JSON rejected (scene falls back to showing cleaned reply)');
+  assert(
+    tools.every((t) => (t.definition.input_schema as { type?: string }).type === 'object'),
+    'all tool input schemas are objects'
+  );
+
+  const lookup = await tools.find((t) => t.definition.name === 'look_up_entries')!.run({ days_back: 7 });
+  assert(typeof lookup === 'string' && lookup.length > 0, 'look_up_entries returns a summary string');
+
+  const rememberResult = await tools.find((t) => t.definition.name === 'remember')!.run({
+    fact: 'Smoke fact: prefers tea',
+  });
+  assert(rememberResult.includes('Remembered'), 'remember tool confirms the save');
+  const wsAfterRemember = renderWorkspaceContext(userRow.id, { includeBootstrap: false });
+  assert(wsAfterRemember.includes('Smoke fact: prefers tea'), 'remember tool persists fact to workspace');
+
+  // save_journal_entry with no OneNote configured: saves locally, reports honestly via effects.
+  const saveResult = await tools.find((t) => t.definition.name === 'save_journal_entry')!.run({
+    entry_markdown: '## 🌙 Evening\n\nSmoke save test — felt good to wrap the day.',
+  });
+  assert(saveResult.includes('Entry saved'), 'save_journal_entry reports the save back to the model');
+  assert(effects.savedEntry !== undefined, 'save_journal_entry populates session effects for the scene');
+  assert(
+    effects.savedEntry?.oneNoteStatus === 'not_connected',
+    'save honestly reports OneNote not connected in smoke env (no silent false claim)'
+  );
+
+  const schedResult = await tools.find((t) => t.definition.name === 'update_schedule')!.run({
+    morning_time: '7am',
+    evening_time: '21:30',
+  });
+  assert(schedResult.includes('07:00') && schedResult.includes('21:30'), 'update_schedule parses natural times');
+  assert(getProfileForUser(userRow.id)?.morningTime === '07:00', 'update_schedule persists to profile');
+
+  // Strict time parsing: impossible clock values are rejected, not silently normalized.
+  const badTime = await tools.find((t) => t.definition.name === 'update_schedule')!.run({ morning_time: '25:00' });
+  assert(badTime.toLowerCase().includes('error'), 'update_schedule rejects an impossible time (25:00)');
+  assert(getProfileForUser(userRow.id)?.morningTime === '07:00', 'bad time did not overwrite the good morning time');
+
+  // Routines support any cadence, not daily-only.
+  const setRoutine = tools.find((t) => t.definition.name === 'set_routine')!;
+  const weekly = await setRoutine.run({
+    name: 'Week review',
+    instruction: 'Ask me to reflect on the week and plan the next one',
+    cadence: 'weekly',
+    weekday: 'Friday',
+    time: '17:00',
+  });
+  assert(weekly.toLowerCase().includes('friday'), 'set_routine creates a weekly (Friday) routine');
+  const interval = await setRoutine.run({
+    name: 'Gratitude pulse',
+    instruction: 'Ask what I am grateful for right now',
+    cadence: 'interval',
+    every_hours: 4,
+  });
+  assert(interval.includes('4h') || interval.toLowerCase().includes('every'), 'set_routine creates an interval routine');
+  const userRoutines = listRoutinesForUser(userRow.id);
+  assert(
+    userRoutines.some((r) => r.schedule.type === 'weekly') && userRoutines.some((r) => r.schedule.type === 'interval'),
+    'weekly and interval routines both persisted'
+  );
+
+  section('Time parsing — bare meridiem (9pm/12am) and rejection');
+  assert(parseTime('9pm') === '21:00', `"9pm" -> 21:00 (got ${parseTime('9pm')})`);
+  assert(parseTime('12am') === '00:00', `"12am" -> 00:00 (got ${parseTime('12am')})`);
+  assert(parseTime('12pm') === '12:00', `"12pm" -> 12:00 (got ${parseTime('12pm')})`);
+  assert(parseTime('7am') === '07:00', '"7am" -> 07:00');
+  assert(parseTime('21:30') === '21:30', '"21:30" -> 21:30');
+  assert(parseTime('25:00') === null, '"25:00" is rejected');
 
   section('getLastEntry returns most recent');
   const last = getLastEntry(userRow.id);

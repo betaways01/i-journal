@@ -49,7 +49,8 @@ async function executeRoutine(bot: Telegraf, routine: RoutineRecord): Promise<vo
 
     const result = await runRoutineSkill({ routine, profile });
     for (const message of result.messages) {
-      await bot.telegram.sendMessage(user.telegram_id, message);
+      // Defense-in-depth: never send empty text (Telegram 400s on it).
+      if (message.trim()) await bot.telegram.sendMessage(user.telegram_id, message);
     }
 
     const mergedConfig = result.configUpdate ?? routine.config;

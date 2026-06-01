@@ -227,7 +227,8 @@ export function registerCallbacks(bot: Telegraf): void {
           );
         } catch (error) {
           console.error('[Callback] storage_test failed:', error);
-          await ctx.reply('I could not reach OneNote right now. Try reconnecting from /storage.');
+          const msg = error instanceof Error ? error.message : 'I could not reach OneNote right now.';
+          await ctx.reply(`${msg}\n\nUse /storage to reconnect.`);
         }
         return;
       }
