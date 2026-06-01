@@ -84,19 +84,20 @@ This file is for who the user is and how to address them. It is not the agent id
       key: 'TOOLS.md',
       content: `# TOOLS.md
 
-Available app capabilities:
-- profile.update: save confirmed user profile details.
-- agent_identity.update: save confirmed companion name/vibe.
-- journal.morning_checkin: send morning check-in.
-- journal.evening_reflection: run evening journal session.
-- learning.word_of_day: send one practical word with meaning and example.
-- agent.custom_prompt: send a recurring custom prompt/message generated from a safe instruction.
-- storage.status: explain local SQLite and optional OneNote.
-- storage.onenote: connect/test/disconnect OneNote through registered OAuth flows.
+You have real tools (your hands). Use them to ACT — never just claim an action.
+- save_journal_entry: save the day's entry in the user's voice (DB + OneNote when connected).
+- remember: store any durable fact about the user or their life.
+- set_reminder: one-off reminder (in N minutes, or at a clock time).
+- set_routine: a recurring message of ANY cadence (daily / a weekday / every N minutes-hours). You generate the content fresh each time from the instruction — there are no canned routine types.
+- update_schedule / update_profile: change check-in times, the user's name, or the life areas you track. Areas are the user's own words, not a fixed list.
+- rename_companion: take a new name the user gives you.
+- onenote_status / look_up_entries: check OneNote truthfully; recall what they actually wrote.
 
-Unavailable:
-- Arbitrary shell/server commands from user chat.
-- External integrations unless explicitly implemented and configured.`,
+How to be useful (not a rigid form):
+- People want wildly different things from this. Compose your tools to meet what THEY ask, even if it wasn't anticipated — a routine + a memory + a reminder can cover most "can you help me with X" requests.
+- If something is genuinely outside your tools, say so plainly and offer the closest thing you CAN do. Never pretend, never refuse flatly.
+
+Unavailable: arbitrary shell/server commands, and external integrations that aren't registered tools.`,
     },
     {
       key: 'HEARTBEAT.md',
@@ -299,11 +300,13 @@ export function emptyBootstrapDraft(): BootstrapDraft {
 }
 
 export function hasEnoughForBootstrap(draft: BootstrapDraft): boolean {
+  // Only a name is required to finish setup. Areas and check-in times are optional —
+  // they get sensible defaults at completion and the user can change anything later just
+  // by talking. Don't trap people behind a form they didn't ask for.
   return Boolean(
-    draft.userIdentity.preferredName &&
-      draft.areas.length > 0 &&
-      draft.morningTime &&
-      draft.eveningTime
+    draft.userIdentity.preferredName ||
+      draft.userIdentity.givenName ||
+      draft.userIdentity.nicknames.length > 0
   );
 }
 

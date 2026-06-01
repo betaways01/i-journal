@@ -41,6 +41,37 @@ export interface MicrosoftProfile {
   email: string | null;
 }
 
+/** Human explanation shown when Graph can't reach OneNote for an account (the SPO-license case). */
+export const ONENOTE_LICENSE_HINT =
+  "Couldn't reach OneNote with this Microsoft account (Microsoft returned a SharePoint/OneDrive " +
+  'access error). This can happen with either a work/school or a personal account, depending on ' +
+  'licensing and sign-in. Try /storage again and sign in with the Microsoft account whose OneNote ' +
+  'you actually use — if one keeps failing, try the other type (work/school vs personal). Your ' +
+  'journals stay safely saved in the app meanwhile.';
+
+function isOneNoteLicenseError(body: string): boolean {
+  return body.includes('30121') || /SharePoint license/i.test(body) || /tenant does not have/i.test(body);
+}
+
+/**
+ * Confirm the account can actually reach OneNote (not just sign in). Catches the 30121
+ * "no SharePoint license" case at CONNECT time with a clear message, instead of letting
+ * every future save fail silently.
+ */
+export async function assertOneNoteUsable(accessToken: string): Promise<void> {
+  const response = await fetch('https://graph.microsoft.com/v1.0/me/onenote/notebooks?$top=1', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (response.ok) return;
+
+  const body = await response.text();
+  if (isOneNoteLicenseError(body)) {
+    throw new Error(ONENOTE_LICENSE_HINT);
+  }
+  throw new Error(`OneNote isn't reachable for this account yet (${response.status}). ${body.slice(0, 200)}`);
+}
+
 function getOAuthStateSecret(): string {
   return process.env.OAUTH_STATE_SECRET || config.telegram.botToken;
 }
@@ -199,6 +230,10 @@ export async function saveMicrosoftConnectionFromCode(
   }
 
   const profile = await fetchMicrosoftProfile(tokenData.access_token);
+
+  // Fail fast: verify OneNote actually works for this account BEFORE storing the connection,
+  // so we never present a "connected" account that silently fails every save.
+  await assertOneNoteUsable(tokenData.access_token);
 
   upsertStorageConnectionForUser({
     userId,

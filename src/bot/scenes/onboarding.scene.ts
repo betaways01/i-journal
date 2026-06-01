@@ -275,8 +275,11 @@ export async function handleOnboardingMessage(ctx: Context, userId: string, text
 
     await ctx.reply(assistantReply);
 
+    // Only a missing NAME should block completion. Areas/times are optional now, so even if
+    // the model wrongly leaves them in `missing`, don't trap the user in the setup form.
     const enough = hasEnoughForBootstrap(merged);
-    if (enough && (result.readyToComplete || result.missing.length === 0)) {
+    const blocking = result.missing.filter((m) => m === 'identity');
+    if (enough && (result.readyToComplete || blocking.length === 0)) {
       await showFinalConfirmation(ctx, userId, merged);
       return;
     }

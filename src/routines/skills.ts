@@ -2,111 +2,41 @@ import { Profile } from '../profile/defaults';
 import { RoutineRecord, SkillRunResult } from './types';
 import { sendMessage } from '../ai';
 
-interface WordItem {
-  word: string;
-  meaning: string;
-  example: string;
-  prompt: string;
+/**
+ * Every routine generates its message FRESH from the user's own instruction. There is no
+ * hardcoded content (no canned word list, no fixed templates) — the user can ask for any
+ * recurring message and the model composes it each time. A legacy 'learning.word_of_day'
+ * routine is just a custom prompt whose instruction is "teach a useful word".
+ */
+function instructionFor(routine: RoutineRecord): string {
+  const prompt = typeof routine.config.prompt === 'string' ? routine.config.prompt.trim() : '';
+  if (prompt) return prompt;
+  const goal = typeof routine.config.goal === 'string' ? routine.config.goal.trim() : '';
+  if (goal) return goal;
+  if (routine.kind === 'learning.word_of_day') {
+    return 'Teach one useful word: the word, a one-line meaning, and a natural example sentence.';
+  }
+  return routine.name;
 }
 
-const WORDS: WordItem[] = [
-  {
-    word: 'rapport',
-    meaning: 'An easy, trusting connection with someone.',
-    example: 'I tried to build rapport first before discussing the hard part.',
-    prompt: 'Use it when you want to describe a conversation that felt warm and easy.',
-  },
-  {
-    word: 'nuance',
-    meaning: 'A small but important difference in meaning, feeling, or situation.',
-    example: 'There is some nuance here; it is not simply good or bad.',
-    prompt: 'Use it when a topic needs a little more care than a quick answer.',
-  },
-  {
-    word: 'concise',
-    meaning: 'Clear and short, without unnecessary words.',
-    example: 'Let me keep this concise so we can decide quickly.',
-    prompt: 'Use it when you want to sound clear, respectful, and focused.',
-  },
-  {
-    word: 'candid',
-    meaning: 'Honest and direct, without being harsh.',
-    example: 'Can I be candid about what I think is happening?',
-    prompt: 'Use it before sharing honest feedback with care.',
-  },
-  {
-    word: 'reframe',
-    meaning: 'To look at something from a different angle.',
-    example: 'Maybe we can reframe this as a learning moment.',
-    prompt: 'Use it when you want to shift a conversation toward possibility.',
-  },
-  {
-    word: 'gracious',
-    meaning: 'Kind, generous, and calm, especially when things are tense.',
-    example: 'She gave a gracious response even though the question was unfair.',
-    prompt: 'Use it when describing someone who handles pressure with kindness.',
-  },
-  {
-    word: 'specific',
-    meaning: 'Clear and exact, not vague.',
-    example: 'Can you give me a specific example?',
-    prompt: 'Use it to make conversations more practical.',
-  },
-];
+async function runGeneratedRoutine(routine: RoutineRecord, profile: Profile): Promise<SkillRunResult> {
+  const instruction = instructionFor(routine);
 
-function nextWordIndex(routine: RoutineRecord): number {
-  const raw = routine.config.lastWordIndex;
-  const last = typeof raw === 'number' && Number.isInteger(raw) ? raw : -1;
-  return (last + 1) % WORDS.length;
-}
+  const system = `You are ${profile.name}'s journal companion, running a recurring routine they set up themselves.
 
-function runWordOfDay(routine: RoutineRecord, profile: Profile): SkillRunResult {
-  const index = nextWordIndex(routine);
-  const item = WORDS[index];
-  const goal = typeof routine.config.goal === 'string'
-    ? routine.config.goal
-    : 'improve daily conversations';
+Write ONE short Telegram message that fulfils the routine, in your warm, human voice. Make it fresh — never the same wording twice, never a canned template. Be specific and useful. Do not claim you did anything outside this chat.
 
-  return {
-    messages: [
-      [
-        `Word for today, ${profile.name}: ${item.word}`,
-        '',
-        `Meaning: ${item.meaning}`,
-        `Use it: "${item.example}"`,
-        '',
-        item.prompt,
-      ].join('\n'),
-    ],
-    outputSummary: `${item.word} - ${goal}`,
-    configUpdate: {
-      ...routine.config,
-      goal,
-      lastWordIndex: index,
-    },
-  };
-}
-
-async function runCustomPrompt(routine: RoutineRecord, profile: Profile): Promise<SkillRunResult> {
-  const prompt = typeof routine.config.prompt === 'string'
-    ? routine.config.prompt
-    : typeof routine.config.goal === 'string'
-      ? routine.config.goal
-      : routine.name;
-
-  const system = `You are i-Journal running a user-confirmed recurring routine.
-
-Write one short Telegram message for ${profile.name}.
-Be useful, warm, and specific. Do not claim you did anything outside the app.
-
-Routine name: ${routine.name}
-Routine instruction: ${prompt}
-User areas: ${profile.sections.map((s) => s.title).join(', ')}
+Routine: ${routine.name}
+What they asked for: ${instruction}
+Their life areas: ${profile.sections.map((s) => s.title).join(', ') || 'not specified'}
 Timezone: ${profile.timezone}`;
 
   const message = await sendMessage(system, [], 'Generate this routine message now.');
+  const text = message.trim();
+  // An empty generation becomes a clean no-op (success, normal next run) instead of a
+  // Telegram 400 + 10-minute retry loop.
   return {
-    messages: [message.trim()],
+    messages: text ? [text] : [],
     outputSummary: routine.name,
   };
 }
@@ -115,13 +45,7 @@ export async function runRoutineSkill(params: {
   routine: RoutineRecord;
   profile: Profile;
 }): Promise<SkillRunResult> {
-  if (params.routine.kind === 'learning.word_of_day') {
-    return runWordOfDay(params.routine, params.profile);
-  }
-
-  if (params.routine.kind === 'agent.custom_prompt') {
-    return runCustomPrompt(params.routine, params.profile);
-  }
-
-  throw new Error(`No skill registered for routine kind: ${params.routine.kind}`);
+  // All routine kinds are AI-generated now. The kind field is retained only so existing
+  // rows keep working; behavior no longer branches on it.
+  return runGeneratedRoutine(params.routine, params.profile);
 }

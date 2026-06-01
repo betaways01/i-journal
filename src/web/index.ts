@@ -74,8 +74,13 @@ function microsoftFailureMessage(description: string): string {
     return (
       'Microsoft rejected this account because the Azure app is not configured for personal Microsoft accounts. ' +
       'In Azure Portal, set Supported account types to "Accounts in any organizational directory and personal Microsoft accounts", ' +
-      'then set MICROSOFT_TENANT_ID=common and try again from Telegram.'
+      'then try again from Telegram.'
     );
+  }
+
+  // Our own OneNote-not-usable / license messages are already user-friendly — pass them through.
+  if (/personal Microsoft account|OneNote isn't reachable|30121|SharePoint license/i.test(description)) {
+    return description;
   }
 
   if (description) {
@@ -155,9 +160,20 @@ export function startWebServer(bot: Telegraf): void {
     } catch (error) {
       console.error('[Web] Microsoft callback failed:', error);
       const message = microsoftFailureMessage(error instanceof Error ? error.message : String(error));
-      res
-        .status(500)
-        .send(renderPage('Connection Failed', message));
+
+      // Tell the user in Telegram too, where they actually are — not only on this web page.
+      try {
+        const user = getUserById(parseMicrosoftAuthState(state));
+        if (user) {
+          await bot.telegram
+            .sendMessage(user.telegram_id, `OneNote was not connected.\n\n${message}`)
+            .catch(() => {});
+        }
+      } catch {
+        // state missing/expired — just render the page
+      }
+
+      res.status(500).send(renderPage('Connection Failed', message));
     }
   });
 

@@ -1,6 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { getDueReminders, deleteReminder, PendingReminder } from '../db/reminders.repo';
-import { getUserByTelegramId, listOnboardedUsers } from '../db/users.repo';
+import { listOnboardedUsers } from '../db/users.repo';
 import { getProfileForUser } from '../db/profile.repo';
 import { sessionStore, getJournalState, getTodayDateStringInZone } from '../state/session.store';
 import { sendEveningPrompt, sendMorningPrompt } from '../bot/handlers/callback.handler';
