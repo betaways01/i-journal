@@ -151,3 +151,21 @@ export function computeNextRunAt(schedule: RoutineSchedule, after: Date): Date {
 export function retryRunAt(after: Date, minutes = 10): Date {
   return new Date(after.getTime() + minutes * 60 * 1000);
 }
+
+/**
+ * A daily/weekly routine is "stale" when we only reach it well after its scheduled slot — e.g.
+ * the process was down/redeploying when it was due and only woke hours later. Firing then would
+ * deliver a 6pm reflection at 2am, so the sweeper skips it and rolls forward instead. Interval
+ * routines are cadence-based (not pinned to a time of day) and are never considered stale here.
+ */
+export function isStaleTimeOfDaySlot(
+  schedule: RoutineSchedule,
+  nextRunAtIso: string,
+  now: Date,
+  graceMs: number
+): boolean {
+  if (schedule.type === 'interval') return false;
+  const dueAt = new Date(nextRunAtIso).getTime();
+  if (Number.isNaN(dueAt)) return false;
+  return now.getTime() - dueAt > graceMs;
+}

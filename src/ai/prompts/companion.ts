@@ -48,6 +48,7 @@ PEOPLE ARE NOT A MENU — COMPOSE, DON'T ENCLOSE
 - People use this for wildly different things: a faith journal, a sobriety log, startup notes, parenting moments, grief, gratitude, fitness, study. Meet THEM. Never shrink someone to a preset list of "areas" or a fixed daily form.
 - Your tools are primitives, not features. Combine them to fulfil requests no one scripted: a routine + a remembered fact + a reminder covers most "can you help me with X" asks. If someone wants "nudge me about my mum every Sunday" or "every few hours ask what I'm grateful for", build it from set_routine — you are not limited to a fixed catalogue.
 - Areas and routines are the user's words, not yours. If they name a new area or rhythm, use update_profile / set_routine to keep it.
+- When you schedule a routine or check-in, set it for the time that actually fits their day. Use the time they gave; if they didn't give one, ask or pick a sensible hour (a "morning" thing lands in the morning, not 1am). Never schedule recurring daytime messages in the middle of the night, and confirm the time back to them.
 - When something is genuinely beyond your tools, say so honestly and offer the closest thing you CAN do — never pretend it's done, and never go cold or refuse flatly.
 
 HOW TO USE MEMORY
@@ -165,6 +166,37 @@ function memoryBlock(memory: MemoryContext): string {
   return parts.join('\n');
 }
 
+/** Parse an "HH:MM" string to minutes-of-day, or null if it isn't a real time. */
+function timeToMinutes(value: string | undefined | null): number | null {
+  if (!value) return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+function roughDuration(minutes: number): string {
+  return minutes >= 60 ? `${Math.round(minutes / 60)}h` : `${minutes}m`;
+}
+
+/**
+ * A plain-English read on a recurring time relative to NOW, framed by whichever occurrence is
+ * nearest. This is what stops the tone-deaf "your 9:30 evening is still coming up" at 2am — at
+ * 2am the relevant 21:30 already passed ~5h ago; only at, say, noon is it genuinely ahead.
+ */
+function relativeToNow(label: string, target: string, nowMinutes: number): string | null {
+  const t = timeToMinutes(target);
+  if (t === null) return null;
+  const untilNext = (((t - nowMinutes) % 1440) + 1440) % 1440; // minutes to the next occurrence
+  if (untilNext === 0) return `the ${label} (${target}) is right about now`;
+  const sinceLast = 1440 - untilNext; // minutes since the last occurrence
+  return untilNext <= sinceLast
+    ? `the ${label} (${target}) is still ahead — about ${roughDuration(untilNext)} from now`
+    : `the ${label} (${target}) already passed — about ${roughDuration(sinceLast)} ago`;
+}
+
 function systemFactsBlock(input: CompanionPromptInput): string {
   const profile = input.profile;
   const timezone = profile?.timezone ?? 'UTC';
@@ -181,10 +213,15 @@ function systemFactsBlock(input: CompanionPromptInput): string {
     hourCycle: 'h23',
     timeZone: timezone,
   });
+  const nowMinutes = timeToMinutes(localTime) ?? 0;
   const name = profile?.name ?? 'friend';
   const areas = profile?.sections.map((s) => s.title).join(', ') || 'not set yet';
   const morning = profile?.morningTime ?? 'not set yet';
   const evening = profile?.eveningTime ?? 'not set yet';
+  const clockHint = [
+    relativeToNow('morning check-in', morning, nowMinutes),
+    relativeToNow('evening journal', evening, nowMinutes),
+  ].filter(Boolean).join('; ');
   const storage = input.storageSummary
     ?? 'Entries save first to the private SQLite database. OneNote backup is optional if connected.';
 
@@ -193,7 +230,8 @@ function systemFactsBlock(input: CompanionPromptInput): string {
     `User: ${name}.`,
     `Today: ${localDate}. Local time: ${localTime}. Timezone: ${timezone}.`,
     `Life areas: ${areas}.`,
-    `Morning check-in: ${morning}. Evening journal: ${evening}.`,
+    `Morning check-in: ${morning}. Evening journal: ${evening}.${clockHint ? ` Right now, ${clockHint}.` : ''}`,
+    'Reason about the clock before referring to a scheduled time: never call a time that has already passed "still coming up", and if the user points out the time, take their word over any assumption.',
     `Storage: ${storage}`,
     'Channel: Telegram.',
     'Useful commands: /start shows shortcuts, /settings changes setup, /storage manages OneNote, /last shows the latest entry.',

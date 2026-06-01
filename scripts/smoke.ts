@@ -62,6 +62,7 @@ const {
 } = require('../src/db/routines.repo') as typeof import('../src/db/routines.repo');
 const {
   computeNextRunAt,
+  isStaleTimeOfDaySlot,
 } = require('../src/routines/schedule') as typeof import('../src/routines/schedule');
 const {
   setSessionForUser,
@@ -453,6 +454,37 @@ async function run(): Promise<void> {
     lastRunAt: new Date(),
   });
   assert(updatedRoutine?.next_run_at === nextTomorrow.toISOString(), 'routine next_run_at updates after run');
+
+  section('Missed-slot routines skip instead of firing late (replay-bug guard)');
+  const GRACE = 2 * 60 * 60 * 1000;
+  const dailyAt6pm = { type: 'daily' as const, time: '18:00', timezone: 'Africa/Nairobi' };
+  // Due at 18:00 local (15:00Z); the app only wakes at 02:16 local next day — 8h late → skip.
+  const dueIso = '2026-06-01T15:00:00.000Z';
+  const wokeLate = new Date('2026-06-01T23:16:00.000Z');
+  assert(isStaleTimeOfDaySlot(dailyAt6pm, dueIso, wokeLate, GRACE) === true, '6pm routine seen at 2am is stale → skipped');
+  // On time (within grace): a 20-minute-late wake still fires.
+  const wokeOnTime = new Date('2026-06-01T15:20:00.000Z');
+  assert(isStaleTimeOfDaySlot(dailyAt6pm, dueIso, wokeOnTime, GRACE) === false, '20-min-late routine still fires');
+  // Interval routines are cadence-based, never "stale by time of day".
+  const everyHour = { type: 'interval' as const, everyMinutes: 60, timezone: 'Africa/Nairobi' };
+  assert(isStaleTimeOfDaySlot(everyHour, dueIso, wokeLate, GRACE) === false, 'interval routine is never time-of-day stale');
+
+  section('Companion prompt reasons about the clock (time-awareness)');
+  const clockProfile = { ...getDefaultProfile(), name: 'Clocktest', morningTime: '07:00', eveningTime: '21:30' };
+  const at2am = buildCompanionPrompt({
+    profile: clockProfile,
+    mode: 'drop',
+    now: new Date('2026-06-01T23:16:00.000Z'), // 02:16 Africa/Nairobi
+    memory: { yesterdayEntry: null, weekSummary: null, streakDays: 0, daysSinceLastEntry: null, recentThemes: [] },
+  });
+  assert(/evening journal \(21:30\) already passed/.test(at2am.volatileContext), 'at 2am, 21:30 evening shows as already passed (~5h ago), not "coming up"');
+  const atNoon = buildCompanionPrompt({
+    profile: clockProfile,
+    mode: 'drop',
+    now: new Date('2026-06-01T09:00:00.000Z'), // 12:00 Africa/Nairobi
+    memory: { yesterdayEntry: null, weekSummary: null, streakDays: 0, daysSinceLastEntry: null, recentThemes: [] },
+  });
+  assert(/evening journal \(21:30\) is still ahead/.test(atNoon.volatileContext), 'at noon, 21:30 evening shows as still ahead');
 
   section('Companion toolset — the agent\'s real hands');
   const { buildCompanionTools } = require('../src/agent/tools') as typeof import('../src/agent/tools');
