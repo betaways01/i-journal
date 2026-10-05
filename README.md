@@ -1,155 +1,75 @@
 # i-journal
 
-An AI-powered daily journaling bot on Telegram. It guides you through structured morning and evening reflection sessions using Claude, saves entries to a local SQLite database, and optionally syncs to Microsoft OneNote.
+A journaling companion in a Telegram DM. One model loop decides what to do and what to say; tools do the work and report the truth. It keeps a daily page, a notes library (mirrored to OneNote when connected), reminders and routines, and a memory of the person it talks to.
 
-## How It Works
+How it runs, tool by tool, is in [docs/runtime.md](docs/runtime.md). What is verified and what is left is in [docs/live-readiness.md](docs/live-readiness.md).
 
-- **Morning session** — Brief spiritual check-in: prayer, Bible reading, one thing you're trusting God for today.
-- **Evening session** — Guided reflection across the life areas you pick during setup.
-- **Day-aware prompts** — Tone and extra sections adapt to the day of the week (fasting, classes, church, etc.) based on each user's own weekly schedule.
-- **Local-first storage** — Every compiled entry is saved to SQLite first. OneNote sync is best-effort; a failed sync never loses your journal.
-- **Multi-user** — Anyone can `/start` the bot and set up their own profile, schedule, and sections. Each user has their own independent journal state.
-- **Routine engine** — Lightweight DB-backed routines can run helpful recurring actions, starting with a daily conversation word.
-- **Agent workspace** — Each user gets OpenClaw-style workspace docs in SQLite (`SOUL.md`, `USER.md`, `IDENTITY.md`, etc.) so setup and future sessions can stay adaptive without becoming arbitrary.
-- **Inline button prompts** — Scheduled check-ins arrive with Start / Remind later / Catch up / Skip buttons.
+## Where things live
 
-### Commands
+Nothing about any particular person is written in the code. Like Claude Code (code, then settings, then memory), there are three layers:
 
-| Command    | Description                                |
-|------------|--------------------------------------------|
-| `/start`   | Onboard a new user or show the main menu   |
-| `/morning` | Manually start a morning check-in          |
-| `/journal` | Manually start an evening journal          |
-| `/catchup` | Journal yesterday's entry under yesterday's date |
-| `/settings`| Update sections, schedule, or check-in times |
-| `/skip`    | Skip the current session                   |
-| `/status`  | Show today's completion status             |
-| `/last`    | Show your last journal entry               |
-| `/storage` | Show cloud sync status                     |
-| `/health`  | Show bot / DB status                       |
+| Layer | What goes there | How it changes |
+|---|---|---|
+| Code (`src/core`) | Neutral defaults and the rules tools enforce | A code change |
+| `.env` / Railway variables | Deployment settings: bot tokens, owner and allowed Telegram ids, the fallback `TIMEZONE`, model and service keys | Edit and restart (or `/key` for keys) |
+| Per-person memory (SQLite) | Name, timezone, lasting facts, standing instructions ("keep it short"), saved procedures, journal, notes, reminders | Just say it in the chat. See it with `/memory`, clear it with `/reset`, add a private key with `/key NAME value` (stored encrypted, never shown to the model) |
 
-## Tech Stack
+Anything that depends on where someone is (local news, currency, weather) comes from what the companion knows about them, or it asks once.
 
-- **Runtime:** Node.js 22, TypeScript
-- **Bot:** Telegraf
-- **AI:** Anthropic Claude (Sonnet)
-- **Database:** SQLite via `better-sqlite3` (persistent journaling, sessions, profiles)
-- **Cloud sync (optional):** Microsoft OneNote via Graph API
-- **Scheduling:** `node-cron` for the heartbeat, SQLite for durable routine state
-- **Hosting:** Railway (with a mounted volume for the SQLite file)
-
-## Setup
-
-### Prerequisites
-
-- Node.js 22+
-- Telegram bot token (from [@BotFather](https://t.me/BotFather))
-- Anthropic API key
-
-Optional (needed for OneNote sync):
-- Microsoft Azure app registration
-
-### Install
+## Run it locally
 
 ```bash
 npm install
 ```
 
-### Configure
-
-Copy `.env.example` to `.env` and fill in the required values:
-
 ```bash
 cp .env.example .env
 ```
 
-Only `TELEGRAM_BOT_TOKEN` and `ANTHROPIC_API_KEY` are strictly required. Everything else is optional.
-
-### Microsoft OneNote OAuth (optional)
-
-For users with personal Microsoft accounts, your Azure app registration must support them:
-
-- Azure Portal -> App registrations -> your app -> Authentication
-- Supported account types: "Accounts in any organizational directory and personal Microsoft accounts"
-- Set `MICROSOFT_TENANT_ID=common` in your environment
-
-### Get Legacy Owner Microsoft Tokens (optional)
-
-If you want OneNote sync for your own (owner) account:
+Fill in `TELEGRAM_BOT_TOKEN_TEST` (a second bot for testing), `TELEGRAM_OWNER_ID` and `DEEPSEEK_API_KEY`, then:
 
 ```bash
-npm run get-token
+npm run build
 ```
-
-This starts a local server on port 3000, opens the Microsoft login flow, and prints the tokens to your terminal. Copy them into `.env` as `MICROSOFT_ACCESS_TOKEN` and `MICROSOFT_REFRESH_TOKEN`.
-
-### Run
 
 ```bash
-# Development (auto-reload)
-npm run dev
-
-# Production
-npm run build && npm start
+node dist/app.js
 ```
 
-On first boot, if a legacy `state/profile.json` or `state/journal.state.json` exists (from the single-user build) and `TELEGRAM_OWNER_ID` is set, it will be auto-imported into SQLite as the owner's data.
+Run one poller per bot token at a time. To talk to the same harness in a terminal:
 
-## Project Structure
+```bash
+npm run person:live
+```
+
+## Tests
+
+```bash
+npm test
+```
+
+`npm run test:live` and `npm run eval:live` run against the real model (they need `DEEPSEEK_API_KEY`). `npm run insights -- 24 data/i-journal.db` summarises the turn log of a database.
+
+## Deploy (Railway)
+
+Railway builds every push to `main` (`railway.toml`: `npm run build`, then `npm start`).
+
+- Mount a volume and set `DB_PATH=/data/i-journal.db`; photos are kept next to it.
+- Set `NODE_ENV=production`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID`, `DEEPSEEK_API_KEY` (or send `/key DEEPSEEK_API_KEY …` to the bot as the owner), and `TIMEZONE`.
+- With a public domain (Railway → Settings → Networking) updates arrive by webhook and OneNote can use the one-tap link (`MICROSOFT_REDIRECT_URI=https://<domain>/auth/callback`, registered in Azure under "Web"). Without one, the bot polls and OneNote uses a sign-in code.
+- On the first start the original companion's data is imported once, after a full backup of the database file.
+
+## Project structure
 
 ```
 src/
-├── app.ts                   # Entry: init DB, bot, scheduler
-├── config/                  # Env loader
-├── db/
-│   ├── index.ts             # SQLite connection + migrations
-│   ├── users.repo.ts        # User CRUD
-│   ├── profile.repo.ts      # Per-user profile storage
-│   ├── journalState.repo.ts # Per-user completion tracking
-│   ├── sessions.repo.ts     # Persistent active sessions
-│   ├── entries.repo.ts      # Compiled journal entries (local source of truth)
-│   ├── routines.repo.ts     # DB-backed recurring routines + run history
-│   ├── agentWorkspace.repo.ts # OpenClaw-style workspace docs in SQLite
-│   └── legacy.migrate.ts    # One-time JSON → SQLite import
-├── agent/                   # Workspace docs + LLM bootstrap understanding
-├── profile/
-│   └── defaults.ts          # Profile type, default template, normalization
-├── bot/
-│   ├── index.ts             # Bot wiring
-│   ├── userContext.ts       # Resolve BotUser (row + profile) from Telegram ctx
-│   ├── handlers/            # /commands, text routing, inline-button callbacks
-│   └── scenes/              # onboarding, morning, evening, settings flows
-├── ai/
-│   └── prompts/             # Day-aware prompt builders (pure — take Profile as arg)
-├── onenote/                 # Microsoft Graph client (owner-only for now)
-├── routines/                # Routine schedules and executable skills
-├── scheduler/               # node-cron jobs plus the routine heartbeat
-└── state/                   # Thin session-store facade over SQLite
-scripts/
-└── get-token.ts             # One-time OAuth helper for owner's Microsoft tokens
-data/
-└── i-journal.db             # Created on first boot (configurable via DB_PATH)
+├── app.ts            # Entry: database, bot, OneNote, web server, launch
+├── config/           # Deployment settings from the environment
+├── core/             # The harness: loop, context, prompt, tools, store, sweeper, model client, logs
+├── bot/person/       # Telegram gateway, delivery, inbox, OneNote library and sign-in service
+├── onenote/          # Microsoft sign-in (PKCE, device code), Graph client, XHTML
+├── web/              # Webhook, Microsoft callback, /health
+├── db/               # SQLite connection, app tables (users, connections, old companion tables)
+└── cli/              # Terminal chat, turn-log insights
+tests/                # Unit, end-to-end (fake Telegram, fake Microsoft) and live model tests
 ```
-
-## Deployment on Railway
-
-Railway has a "Volumes" feature — create a volume and mount it (e.g. at `/data`), then set `DB_PATH=/data/i-journal.db`. This ensures the SQLite file survives deploys and restarts.
-
-```toml
-# railway.toml
-[build]
-builder = "nixpacks"
-buildCommand = "npm run build"
-
-[deploy]
-startCommand = "npm start"
-restartPolicyType = "on_failure"
-```
-
-## Roadmap
-
-- Per-user Microsoft OAuth (web callback server + encrypted refresh tokens)
-- Additional storage backends: Google Drive, Notion, Markdown export, email-to-self
-- Weekly / monthly AI review ("what did I say about work last week?")
-- Voice-note journaling
-- Short-journal mode for tired days

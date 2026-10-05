@@ -4,3 +4,5 @@ dist/
 /state/
 /data/
 *.log
+state/person-live.json
+state/person-session.json

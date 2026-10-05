@@ -1,4 +1,6 @@
 # i-journal — Claude Code Build Specification
+> **Historical.** The original build spec. The app that runs today is described in `docs/runtime.md` and the README; the scene-based companion this spec describes was removed (its data is imported on first start).
+
 > Full spec for an AI-powered daily journal bot for Francis Kangethe.
 > Read this entire document before writing a single line of code.
 
