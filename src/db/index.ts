@@ -50,7 +50,8 @@ export function closeDb(): void {
   }
 }
 
-function runMigrations(db: Database.Database): void {
+/** Creates/updates the app tables (users, storage_connections and the original companion's tables). */
+export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY,

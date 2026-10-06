@@ -1,211 +1,83 @@
+/**
+ * The small web server: Telegram webhook (production), the Microsoft sign-in callback, and /health.
+ */
 import express from 'express';
 import { Server } from 'http';
-import { Telegraf } from '../bot';
-import { config, hasMicrosoftOAuthConfigured } from '../config';
-import { getUserById } from '../db/users.repo';
-import {
-  parseMicrosoftAuthState,
-  saveMicrosoftConnectionFromCode,
-} from '../onenote/auth';
+import { Telegraf } from 'telegraf';
+import { Logger } from '../core/types';
 
-let server: Server | null = null;
+export interface WebOptions {
+  port: number;
+  log: Logger;
+  webhook?: { bot: Telegraf; path: string; secretToken: string };
+  /** Finishes a Microsoft sign-in. */
+  oauth?: {
+    complete(state: string, code: string): Promise<{ ok: boolean; title: string; message: string }>;
+    failed(state: string, description: string): Promise<{ title: string; message: string }>;
+  };
+  health(): Record<string, unknown>;
+}
 
 function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function renderPage(title: string, message: string): string {
-  const safeTitle = escapeHtml(title);
-  const safeMessage = escapeHtml(message);
-
-  return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${safeTitle}</title>
-    <style>
-      body {
-        margin: 0;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #111827;
-        color: #f9fafb;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-      }
-
-      main {
-        width: min(92vw, 520px);
-        padding: 32px 24px;
-        background: #1f2937;
-        border: 1px solid #374151;
-        border-radius: 8px;
-      }
-
-      h1 {
-        margin: 0 0 12px;
-        font-size: 24px;
-      }
-
-      p {
-        margin: 0;
-        line-height: 1.5;
-        color: #d1d5db;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>${safeTitle}</h1>
-      <p>${safeMessage}</p>
-    </main>
-  </body>
-</html>`;
+function page(title: string, message: string): string {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>${escapeHtml(title)}</title>
+<style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#111827;color:#f9fafb;min-height:100vh;display:grid;place-items:center}
+main{width:min(92vw,520px);padding:32px 24px;background:#1f2937;border:1px solid #374151;border-radius:8px}h1{margin:0 0 12px;font-size:24px}p{margin:0;line-height:1.5;color:#d1d5db}</style>
+</head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body></html>`;
 }
 
-function microsoftFailureMessage(description: string): string {
-  if (description.includes('AADSTS50020')) {
-    return (
-      'Microsoft rejected this account because the Azure app is not configured for personal Microsoft accounts. ' +
-      'In Azure Portal, set Supported account types to "Accounts in any organizational directory and personal Microsoft accounts", ' +
-      'then try again from Telegram.'
-    );
-  }
-
-  // Our own OneNote-not-usable / license messages are already user-friendly — pass them through.
-  if (/personal Microsoft account|OneNote isn't reachable|30121|SharePoint license/i.test(description)) {
-    return description;
-  }
-
-  if (description) {
-    return `Microsoft sign-in failed: ${description}`;
-  }
-
-  return 'The Microsoft sign-in did not finish cleanly. Start again from Telegram.';
-}
-
-export function startWebServer(bot: Telegraf): void {
-  if (server) return;
-
+export function startWebServer(opts: WebOptions): { close(): void } {
   const app = express();
+  app.disable('x-powered-by');
+  const { log } = opts;
 
-  // In webhook mode, let Telegram POST updates to this server. Mounted before any body
-  // parser so Telegraf reads the raw update; the secret token is validated per request.
-  if (config.webhook.enabled) {
-    app.use(bot.webhookCallback(config.webhook.path, { secretToken: config.webhook.secretToken }));
-    console.log(`[Web] Telegram webhook endpoint mounted at ${config.webhook.path}`);
+  // Mounted before any body parser so telegraf reads the raw update; the secret is checked per request.
+  if (opts.webhook) {
+    app.use(opts.webhook.bot.webhookCallback(opts.webhook.path, { secretToken: opts.webhook.secretToken }));
+    log.info('telegram webhook endpoint mounted', { path: opts.webhook.path });
   }
 
   app.get('/health', (_req, res) => {
-    res.json({ ok: true, service: 'i-journal-web' });
+    res.json({ ok: true, service: 'i-journal', ...opts.health() });
   });
 
   app.get('/auth/callback', async (req, res) => {
-    const code = typeof req.query.code === 'string' ? req.query.code : '';
-    const state = typeof req.query.state === 'string' ? req.query.state : '';
-    const oauthError = typeof req.query.error === 'string' ? req.query.error : '';
-    const oauthErrorDescription =
-      typeof req.query.error_description === 'string' ? req.query.error_description : '';
-
-    if (oauthError) {
-      const message = microsoftFailureMessage(oauthErrorDescription || oauthError);
-
-      if (state) {
-        try {
-          const userId = parseMicrosoftAuthState(state);
-          const user = getUserById(userId);
-          if (user) {
-            await bot.telegram.sendMessage(user.telegram_id, `OneNote connection failed.\n\n${message}`).catch((error) => {
-              console.error('[Web] Failed to send OneNote failure message to Telegram:', error);
-            });
-          }
-        } catch {
-          // State may be missing or expired; still render the useful page.
-        }
-      }
-
-      res.status(400).send(renderPage('Connection Failed', message));
+    const q = (k: string) => (typeof req.query[k] === 'string' ? (req.query[k] as string) : '');
+    const state = q('state');
+    if (!opts.oauth) {
+      res.status(404).send(page('Not available', 'OneNote is not set up on this server.'));
       return;
     }
-
-    if (!code || !state) {
-      res
-        .status(400)
-        .send(renderPage('Connection Failed', 'Missing Microsoft OAuth details. Start again from Telegram.'));
-      return;
-    }
-
     try {
-      const userId = parseMicrosoftAuthState(state);
-      const user = getUserById(userId);
-
-      if (!user) {
-        res
-          .status(404)
-          .send(renderPage('Connection Failed', 'That journal user could not be found anymore.'));
+      if (q('error')) {
+        const r = await opts.oauth.failed(state, q('error_description') || q('error'));
+        res.status(400).send(page(r.title, r.message));
         return;
       }
-
-      const profile = await saveMicrosoftConnectionFromCode(userId, code);
-
-      await bot.telegram.sendMessage(
-        user.telegram_id,
-        `✅ OneNote connected.\n\nSigned in as ${profile.displayName}${profile.email ? `\n${profile.email}` : ''}`
-      ).catch((error) => {
-        console.error('[Web] Failed to send OneNote success message to Telegram:', error);
-      });
-
-      res.send(
-        renderPage('OneNote Connected', 'You can return to Telegram. Your journal can now sync to your own OneNote.')
-      );
-    } catch (error) {
-      console.error('[Web] Microsoft callback failed:', error);
-      const message = microsoftFailureMessage(error instanceof Error ? error.message : String(error));
-
-      // Tell the user in Telegram too, where they actually are — not only on this web page.
-      try {
-        const user = getUserById(parseMicrosoftAuthState(state));
-        if (user) {
-          await bot.telegram
-            .sendMessage(user.telegram_id, `OneNote was not connected.\n\n${message}`)
-            .catch(() => {});
-        }
-      } catch {
-        // state missing/expired — just render the page
+      if (!q('code') || !state) {
+        res.status(400).send(page('Sign-in incomplete', 'Microsoft did not send the details back. Ask the bot for a new link.'));
+        return;
       }
-
-      res.status(500).send(renderPage('Connection Failed', message));
+      const r = await opts.oauth.complete(state, q('code'));
+      res.status(r.ok ? 200 : 400).send(page(r.title, r.message));
+    } catch (err) {
+      log.error('oauth callback crashed', { error: err instanceof Error ? err.stack || err.message : String(err) });
+      res.status(500).send(page('Something went wrong', 'The sign-in could not be finished. Ask the bot for a new link.'));
     }
   });
 
-  server = app.listen(config.web.port, () => {
-    const oauthSuffix = hasMicrosoftOAuthConfigured() ? ' with Microsoft callback enabled' : '';
-    console.log(`[Web] Listening on http://localhost:${config.web.port}${oauthSuffix}`);
-  });
-
+  let server: Server | null = app.listen(opts.port, () => log.info('web server listening', { port: opts.port }));
   server.on('error', (error: NodeJS.ErrnoException) => {
-    if (error.code === 'EADDRINUSE') {
-      console.error(
-        `[Web] Port ${config.web.port} is already in use. ` +
-          `Set PORT and MICROSOFT_REDIRECT_URI to a free port before using /storage connect.`
-      );
-      server = null;
-      return;
-    }
-
-    console.error('[Web] Server error:', error);
+    log.error(error.code === 'EADDRINUSE' ? `port ${opts.port} is in use; set PORT to a free one` : 'web server error', { error: error.message });
     server = null;
   });
-}
-
-export function closeWebServer(): void {
-  if (!server) return;
-  server.close();
-  server = null;
+  return {
+    close() {
+      server?.close();
+      server = null;
+    },
+  };
 }

@@ -68,24 +68,3 @@ export function getUserById(id: number): UserRow | null {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined;
   return row ?? null;
 }
-
-export function markOnboardingComplete(userId: number): void {
-  const db = getDb();
-  db.prepare('UPDATE users SET onboarding_complete = 1, updated_at = ? WHERE id = ?').run(
-    new Date().toISOString(),
-    userId
-  );
-}
-
-export function markOnboardingIncomplete(userId: number): void {
-  const db = getDb();
-  db.prepare('UPDATE users SET onboarding_complete = 0, updated_at = ? WHERE id = ?').run(
-    new Date().toISOString(),
-    userId
-  );
-}
-
-export function listOnboardedUsers(): UserRow[] {
-  const db = getDb();
-  return db.prepare('SELECT * FROM users WHERE onboarding_complete = 1').all() as UserRow[];
-}
