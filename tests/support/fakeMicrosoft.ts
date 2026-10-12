@@ -144,6 +144,24 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
     };
   }
 
+  /**
+   * Like OneNote: pages of 20 with @odata.nextLink; with $top, exactly that many and NO nextLink
+   * (the rest silently dropped). Counts how often a cap was sent.
+   */
+  function paged(url: URL, items: unknown[]): Response {
+    const top = url.searchParams.get('$top');
+    if (top) {
+      cappedRequests++;
+      return json(200, { value: items.slice(0, Number(top)) });
+    }
+    const skip = Number(url.searchParams.get('$skip') || 0);
+    const value = items.slice(skip, skip + 20);
+    const nextUrl = new URL(url.toString());
+    nextUrl.searchParams.set('$skip', String(skip + 20));
+    return json(200, { value, ...(skip + 20 < items.length ? { '@odata.nextLink': nextUrl.toString() } : {}) });
+  }
+  let cappedRequests = 0;
+
   function sectionJson(x: { id: string; notebookId: string; displayName: string }) {
     const times = pages.filter((pg) => pg.sectionId === x.id).map((pg) => pg.modifiedAt ?? pg.createdAt);
     return {
@@ -168,14 +186,14 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
     const p = url.pathname.replace(/^\/v1\.0/, '');
     if (p === '/me') return json(200, { id: 'ms-1', displayName: opts.displayName ?? 'Test Person', mail: null, userPrincipalName: opts.upn ?? 'person@outlook.com' });
     if (opts.noLicense && p.startsWith('/me/onenote')) return json(403, { error: { code: '30121', message: 'The tenant does not have a valid SharePoint license.' } });
-    if (p === '/me/onenote/notebooks' && method === 'GET') return json(200, { value: notebooks });
+    if (p === '/me/onenote/notebooks' && method === 'GET') return paged(url, notebooks);
     if (p === '/me/onenote/notebooks' && method === 'POST') {
       const nb = { id: next('nb'), displayName: (JSON.parse(String(init.body)) as { displayName: string }).displayName };
       notebooks.push(nb);
       return json(201, nb);
     }
     let m = /^\/me\/onenote\/notebooks\/([^/]+)\/sections$/.exec(p);
-    if (m && method === 'GET') return json(200, { value: sections.filter((s) => s.notebookId === decodeURIComponent(m![1])).map(sectionJson) });
+    if (m && method === 'GET') return paged(url, sections.filter((s) => s.notebookId === decodeURIComponent(m![1])).map(sectionJson));
     if (/^\/me\/onenote\/notebooks\/[^/]+\/sectionGroups$/.test(p)) return json(200, { value: [] });
     if (m && method === 'POST') {
       const s = { id: next('sec'), notebookId: decodeURIComponent(m[1]), displayName: (JSON.parse(String(init.body)) as { displayName: string }).displayName };
@@ -194,16 +212,16 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
       pages.push(page);
       return json(201, pageJson(page));
     }
-    if (m && method === 'GET') return json(200, { value: pages.filter((x) => x.sectionId === decodeURIComponent(m![1])).map(pageJson).reverse() });
+    if (m && method === 'GET') return paged(url, pages.filter((x) => x.sectionId === decodeURIComponent(m![1])).map(pageJson).reverse());
     if (p === '/me/onenote/pages' && method === 'GET') {
       if (opts.maxSectionsForAllPages !== undefined && sections.length > opts.maxSectionsForAllPages) {
         return json(400, { error: { code: '20266', message: 'The number of maximum sections is exceeded for this request.' } });
       }
-      return json(200, { value: [...pages].reverse().map(pageJson) });
+      return paged(url, [...pages].reverse().map(pageJson));
     }
     if (p === '/me/onenote/sections' && method === 'GET') {
       if (opts.sectionsListFails) return json(400, { error: { code: '20266', message: 'The number of maximum sections is exceeded for this request.' } });
-      return json(200, { value: sections.map(sectionJson) });
+      return paged(url, sections.map(sectionJson));
     }
     m = /^\/me\/onenote\/pages\/([^/]+)(\/content)?$/.exec(p);
     if (m) {
@@ -299,6 +317,8 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
     revokeAccessTokens(): void {
       access.clear();
     },
+    /** How many list requests carried $top (each one may have dropped items). */
+    cappedRequests: () => cappedRequests,
     addForeignPage(notebook: string, section: string, title: string, html: string): FakePage {
       let nb = notebooks.find((n) => n.displayName === notebook);
       if (!nb) notebooks.push((nb = { id: next('nb'), displayName: notebook }));

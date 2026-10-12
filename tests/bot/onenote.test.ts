@@ -450,3 +450,15 @@ test('notes_browse lists OneNote for the model and lets it cite what it listed',
   const off = ctxFor(newStore(), undefined, { ports: { library: { ...library, isConnected: () => false } } });
   assert.match((await executeTool({ id: 'b2', name: 'notes_browse', arguments: '{}' }, off)).content, /not connected/);
 });
+
+test('long listings are read to the end (Microsoft drops items when a page size is forced)', async () => {
+  const s = setup();
+  for (let i = 0; i < 45; i++) s.fake.addForeignPage(`Notebook ${i % 3}`, `Section ${i}`, `Page in section ${i}`, '<p>x</p>');
+  for (let i = 0; i < 65; i++) s.fake.addForeignPage('Notebook 0', 'Section 0', `Extra page ${i}`, '<p>y</p>');
+  await connectByLink(s);
+  await indexReady(s);
+  const st = s.lib.indexStatus(USER)!;
+  assert.equal(st.sections, 45, 'more than one page of sections');
+  assert.equal(st.pages, 110, 'more than one page of pages in a section');
+  assert.equal(s.fake.cappedRequests(), 0, 'never sends $top, which would silently cut the list');
+});
