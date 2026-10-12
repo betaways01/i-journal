@@ -194,7 +194,11 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
     }
   }
 
-  async function list<T>(userId: number, url: string, maxPages = 5): Promise<T[]> {
+  /**
+   * Every item of a Graph collection, following @odata.nextLink. Never send $top here: OneNote then
+   * returns exactly that many and no nextLink, silently dropping the rest (seen in production).
+   */
+  async function list<T>(userId: number, url: string, maxPages = 50): Promise<T[]> {
     const out: T[] = [];
     let next: string | undefined = url;
     for (let i = 0; next && i < maxPages; i++) {
@@ -209,7 +213,7 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
   const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
   async function ensureNotebook(userId: number, name: string): Promise<{ id: string; name: string }> {
-    const books = await list<{ id: string; displayName: string }>(userId, `${GRAPH}/notebooks?$select=id,displayName&$top=100`);
+    const books = await list<{ id: string; displayName: string }>(userId, `${GRAPH}/notebooks?$select=id,displayName`);
     const found = books.find((b) => same(b.displayName, name));
     if (found) return { id: found.id, name: found.displayName };
     const res = await call(userId, `${GRAPH}/notebooks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName: name }) });
@@ -248,7 +252,7 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
 
   return {
     async whoami(userId) {
-      const books = await list<{ id: string }>(userId, `${GRAPH}/notebooks?$select=id&$top=100`, 1);
+      const books = await list<{ id: string }>(userId, `${GRAPH}/notebooks?$select=id`, 1);
       return { notebooks: books.length };
     },
 
@@ -259,7 +263,7 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
       const cached = sectionIds.get(key);
       if (cached && now() - cached.at < IDS_TTL_MS) return { sectionId: cached.id, notebook: nb, section: sec };
       const book = await ensureNotebook(userId, nb);
-      const sections = await list<{ id: string; displayName: string }>(userId, `${GRAPH}/notebooks/${encodeURIComponent(book.id)}/sections?$select=id,displayName&$top=100`);
+      const sections = await list<{ id: string; displayName: string }>(userId, `${GRAPH}/notebooks/${encodeURIComponent(book.id)}/sections?$select=id,displayName`);
       let id = sections.find((s) => same(s.displayName, sec))?.id;
       if (!id) {
         const res = await call(userId, `${GRAPH}/notebooks/${encodeURIComponent(book.id)}/sections`, {
@@ -330,8 +334,8 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
     async findInSection(userId, sectionId, title) {
       const pages = await list<{ id: string; title?: string; links?: PageLinks }>(
         userId,
-        `${GRAPH}/sections/${encodeURIComponent(sectionId)}/pages?$select=id,title,links&$orderby=createdDateTime desc&$top=100`,
-        5
+        `${GRAPH}/sections/${encodeURIComponent(sectionId)}/pages?$select=id,title,links&$orderby=createdDateTime desc`,
+        100
       );
       const hit = pages.find((p) => same(p.title || '', title));
       return hit ? { id: hit.id, url: pageUrl(hit.links) } : null;
@@ -349,8 +353,8 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
       try {
         const all = await list<Raw>(
           userId,
-          `${GRAPH}/sections?$select=id,displayName,lastModifiedDateTime&$expand=parentNotebook($select=displayName),parentSectionGroup($select=displayName)&$top=100`,
-          100
+          `${GRAPH}/sections?$select=id,displayName,lastModifiedDateTime&$expand=parentNotebook($select=displayName),parentSectionGroup($select=displayName)`,
+          200
         );
         return all.map((s) => toRef(s));
       } catch (err) {
@@ -359,19 +363,19 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
       }
       // Fallback: walk notebooks and their section groups.
       const out: SectionRef[] = [];
-      const books = await list<{ id: string; displayName: string }>(userId, `${GRAPH}/notebooks?$select=id,displayName&$top=100`, 20);
+      const books = await list<{ id: string; displayName: string }>(userId, `${GRAPH}/notebooks?$select=id,displayName`, 20);
       const walkGroups = async (url: string, notebook: string, prefix: string, depth: number): Promise<void> => {
         if (depth > 4) return;
         const groups = await list<{ id: string; displayName: string }>(userId, url, 20);
         for (const g of groups) {
           const name = prefix ? `${prefix} / ${g.displayName}` : g.displayName;
-          const secs = await list<Raw>(userId, `${GRAPH}/sectionGroups/${encodeURIComponent(g.id)}/sections?$select=id,displayName,lastModifiedDateTime&$top=100`, 20);
+          const secs = await list<Raw>(userId, `${GRAPH}/sectionGroups/${encodeURIComponent(g.id)}/sections?$select=id,displayName,lastModifiedDateTime`, 20);
           out.push(...secs.map((s) => toRef(s, notebook, name)));
           await walkGroups(`${GRAPH}/sectionGroups/${encodeURIComponent(g.id)}/sectionGroups?$select=id,displayName`, notebook, name, depth + 1);
         }
       };
       for (const b of books) {
-        const secs = await list<Raw>(userId, `${GRAPH}/notebooks/${encodeURIComponent(b.id)}/sections?$select=id,displayName,lastModifiedDateTime&$top=100`, 20);
+        const secs = await list<Raw>(userId, `${GRAPH}/notebooks/${encodeURIComponent(b.id)}/sections?$select=id,displayName,lastModifiedDateTime`, 20);
         out.push(...secs.map((s) => toRef(s, b.displayName)));
         await walkGroups(`${GRAPH}/notebooks/${encodeURIComponent(b.id)}/sectionGroups?$select=id,displayName`, b.displayName, '', 0);
       }
@@ -381,8 +385,8 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
     async sectionPages(userId, sectionId) {
       const raw = await list<{ id: string; title?: string; createdDateTime?: string; lastModifiedDateTime?: string; links?: PageLinks }>(
         userId,
-        `${GRAPH}/sections/${encodeURIComponent(sectionId)}/pages?$select=id,title,createdDateTime,lastModifiedDateTime,links&$orderby=lastModifiedDateTime desc&$top=100`,
-        30
+        `${GRAPH}/sections/${encodeURIComponent(sectionId)}/pages?$select=id,title,createdDateTime,lastModifiedDateTime,links&$orderby=lastModifiedDateTime desc`,
+        150
       );
       return raw.map((p) => ({ id: p.id, title: p.title || '(untitled page)', created: p.createdDateTime || null, modified: p.lastModifiedDateTime || null, url: pageUrl(p.links) }));
     },

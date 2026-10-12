@@ -249,7 +249,7 @@ export function createMicrosoftAuth(deps: OAuthDeps): MicrosoftAuth {
 
   /** OneNote must answer for this account before it counts as connected. */
   async function probeOneNote(accessToken: string): Promise<void> {
-    const res = await doFetch('https://graph.microsoft.com/v1.0/me/onenote/notebooks?$top=1&$select=id', {
+    const res = await doFetch('https://graph.microsoft.com/v1.0/me/onenote/notebooks?$select=id', {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(20_000),
     });
