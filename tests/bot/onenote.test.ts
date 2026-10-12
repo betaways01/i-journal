@@ -66,6 +66,14 @@ async function connectByLink(s: ReturnType<typeof setup>) {
   return s.svc.completeLink(state, code);
 }
 
+/** Waits until the background read of their notebooks has finished. */
+async function indexReady(s: ReturnType<typeof setup>) {
+  await waitFor(() => {
+    const st = s.lib.indexStatus(USER);
+    return Boolean(st && !st.building && st.refreshedAt);
+  });
+}
+
 const day = (date: string, entries: JournalDay['entries'], extra: Partial<JournalDay> = {}): JournalDay => ({ date, weekday: 'Friday', entries, updatedAt: '', rev: 1, syncedRev: 0, ...extra });
 const entry = (text: string, media: JournalDay['entries'][number]['media'] = []) => ({ id: 1, localTime: '10:00', text, media, at: NOW.toISOString() });
 
@@ -86,6 +94,10 @@ test('link sign-in (Web registration): PKCE, OneNote probe, stored connection, p
   assert.equal(s.lib.isConnected(USER), true);
   assert.equal(sqliteTokenStore(s.db).get(1)?.meta.mode, 'web');
   assert.ok(s.fake.calls.some((c) => c.url.startsWith('/v1.0/me/onenote/notebooks')), 'OneNote was probed before counting as connected');
+  // The callback loaded twice (in-app browsers do this): still "connected", and no contradicting message.
+  assert.deepEqual(await s.svc.completeLink(state, code), { ok: true, title: 'OneNote connected', message: 'You can go back to Telegram now.' });
+  assert.equal(s.notices.length, 1, 'no "not connected" message after a repeated callback');
+  s.fake.advance(11 * 60_000);
   assert.deepEqual(await s.svc.completeLink(state, code), { ok: false, title: 'OneNote was not connected', message: 'That sign-in link was already used or has expired. Ask for a new one.' });
   assert.equal((await s.svc.completeLink(state.replace(/.$/, 'x'), code)).ok, false, 'tampered state refused');
   const lines = (await s.svc.storageLines(USER)).join('\n');
@@ -222,6 +234,8 @@ test('notes go to their own notebook and section (names made safe); search and r
   assert.match(p.text || '', /<b>Ship it<\/b>/);
 
   s.fake.addForeignPage('Study Group', 'Leadership', 'Trust first', '<p>Trust is the <b>foundation</b>.</p>');
+  await s.lib.refreshIndex(USER);
+  await indexReady(s);
   const hits = await s.lib.search(USER, 'leadership trust', 5);
   assert.equal(hits[0].path, 'Study Group / Leadership / Trust first');
   assert.match(hits[0].url || '', /^https:\/\/onenote\.example\//);
@@ -338,4 +352,101 @@ test('OneNote client classifies errors so callers know whether to retry', async 
   await assert.rejects(client.whoami(1), (e: Error & { kind?: string }) => e.kind === 'reconnect', 'not connected');
   sqliteTokenStore(db).put(1, { accessToken: 'bogus', refreshToken: null, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), meta: {} });
   await assert.rejects(client.whoami(1), (e: Error & { kind?: string }) => e.kind === 'reconnect', 'a token Graph rejects twice');
+});
+
+test('a big account (too many sections for one request) is read section by section; search, browse and recent answer from it', async () => {
+  const s = setup({ maxSectionsForAllPages: 2 });
+  s.fake.addForeignPage('Reflections', 'Morning Pages', 'Gratitude list', '<p>Rest.</p>');
+  s.fake.addForeignPage('Reflections', 'Morning Pages', 'Day 12: Patience', '<p>Wait.</p>');
+  s.fake.addForeignPage('Summer Conference 2026', 'Day 1', '4. Speaker notes', '<p>Notes.</p>');
+  s.fake.addForeignPage('Summer Conference 2026', 'Day 2', 'Closing session', '<p>End.</p>');
+  s.fake.addForeignPage('Work 2026', 'Clients', 'Pricing call', '<p>Call.</p>');
+  // The old way fails for this account, exactly like production did.
+  const raw = await s.fake.fetchImpl('https://graph.microsoft.com/v1.0/me/onenote/pages', { headers: { authorization: 'Bearer x' } });
+  assert.equal(raw.status, 401, 'unauthenticated sanity check');
+
+  await connectByLink(s);
+  await indexReady(s);
+  const st = s.lib.indexStatus(USER)!;
+  assert.deepEqual([st.sections, st.pages], [4, 5]);
+  assert.ok(!s.fake.calls.some((c) => c.url.startsWith('/v1.0/me/onenote/pages?')), 'never asks for all pages at once');
+
+  const hits = await s.lib.search(USER, 'morning pages', 10);
+  assert.deepEqual(hits.map((h) => h.path).sort(), ['Reflections / Morning Pages / Day 12: Patience', 'Reflections / Morning Pages / Gratitude list']);
+  assert.equal((await s.lib.search(USER, 'conference day 2', 5))[0].path, 'Summer Conference 2026 / Day 2 / Closing session');
+
+  const books = await s.lib.browse!(USER, {});
+  assert.match(books.text, /Their OneNote: 3 notebook\(s\), 5 page\(s\)/);
+  assert.match(books.text, /- Summer Conference 2026 — 2 section\(s\), 2 page\(s\)/);
+  const secs = await s.lib.browse!(USER, { notebook: 'summer conference 2026' });
+  assert.match(secs.text, /Sections in Summer Conference 2026/);
+  assert.match(secs.text, /- Day 1 — 1 page\(s\)/);
+  const pages = await s.lib.browse!(USER, { notebook: 'Reflections', section: 'morning pages' });
+  assert.equal(pages.paths.length, 2);
+  assert.match(pages.text, /\[remote:page-\d+\] Reflections \/ Morning Pages \/ /);
+  const recent = await s.lib.browse!(USER, { recentDays: 1 });
+  assert.equal(recent.paths.length, 5);
+  assert.match((await s.lib.browse!(USER, { notebook: 'Nope' })).text, /No notebook called "Nope"/);
+
+  const ref = hits[0].ref;
+  const read = await s.lib.read(USER, ref);
+  assert.match(read!.path, /^Reflections \/ Morning Pages \/ /, 'reading gives the full path, so it can be cited');
+
+  // Only the section that changed is read again.
+  s.fake.advance(60_000);
+  s.fake.addForeignPage('Work 2026', 'Clients', 'Follow-up', '<p>Later.</p>');
+  const before = s.fake.calls.filter((c) => /\/sections\/[^/]+\/pages/.test(c.url)).length;
+  await s.lib.refreshIndex(USER);
+  const reread = s.fake.calls.filter((c) => /\/sections\/[^/]+\/pages/.test(c.url)).length - before;
+  assert.equal(reread, 1);
+  assert.equal(s.lib.indexStatus(USER)!.pages, 6);
+  assert.match((await s.svc.storageLines(USER)).join('\n'), /Notebooks read: 4 sections, 6 pages/);
+});
+
+test('when even the section list is refused, notebooks are walked one by one', async () => {
+  const s = setup({ maxSectionsForAllPages: 0, sectionsListFails: true });
+  s.fake.addForeignPage('Reflections', 'Morning Pages', 'Day 1', '<p>x</p>');
+  s.fake.addForeignPage('Study', 'Romans', 'Chapter 8', '<p>y</p>');
+  await connectByLink(s);
+  await indexReady(s);
+  assert.deepEqual([s.lib.indexStatus(USER)!.sections, s.lib.indexStatus(USER)!.pages], [2, 2]);
+  assert.equal((await s.lib.search(USER, 'romans', 5))[0].path, 'Study / Romans / Chapter 8');
+});
+
+test('connecting a different account starts the index over; pages the app writes are findable at once', async () => {
+  const s = setup();
+  s.fake.addForeignPage('Old Account Notebook', 'Misc', 'Old page', '<p>x</p>');
+  await connectByLink(s);
+  await indexReady(s);
+  assert.equal((await s.lib.search(USER, 'old page', 5)).length, 1);
+  s.fake.pages.splice(0, s.fake.pages.length);
+  s.fake.sections.splice(0, s.fake.sections.length);
+  s.fake.notebooks.splice(0, s.fake.notebooks.length);
+  await connectByLink(s);
+  await indexReady(s);
+  assert.equal((await s.lib.search(USER, 'old page', 5)).length, 0, "the previous account's pages are gone from the index");
+
+  await s.lib.syncNote(USER, { id: 9, notebook: 'Personal', section: 'Money', title: 'Budget rules', body: 'Save first', createdAt: '', updatedAt: '', rev: 1, syncedRev: 0 });
+  assert.equal((await s.lib.search(USER, 'budget', 5))[0].path, 'Personal / Money / Budget rules');
+});
+
+test('notes_browse lists OneNote for the model and lets it cite what it listed', async () => {
+  const { ctxFor, newStore } = await import('../core/helpers');
+  const { executeTool } = await import('../../src/core/tools');
+  const library = {
+    isConnected: () => true,
+    status: async () => ({ connected: true }),
+    search: async () => [],
+    read: async () => null,
+    syncDay: async () => ({ ok: true }),
+    syncNote: async () => ({ ok: true }),
+    browse: async (_u: string, o: { recentDays?: number }) =>
+      o.recentDays === 1 ? { text: 'OneNote pages changed in the last 1 day(s), newest first:\n[remote:p1] Reflections / Morning Pages / Day 12', paths: ['Reflections / Morning Pages / Day 12'] } : { text: 'Their OneNote: 1 notebook(s)', paths: [] },
+  };
+  const ctx = ctxFor(newStore(), undefined, { ports: { library } });
+  const r = await executeTool({ id: 'b1', name: 'notes_browse', arguments: '{"recent_days":1}' }, ctx);
+  assert.match(r.content, /Morning Pages \/ Day 12\nUse notes_read with a ref for the full text\./);
+  assert.ok(ctx.cited.has('Reflections / Morning Pages / Day 12'));
+  const off = ctxFor(newStore(), undefined, { ports: { library: { ...library, isConnected: () => false } } });
+  assert.match((await executeTool({ id: 'b2', name: 'notes_browse', arguments: '{}' }, off)).content, /not connected/);
 });

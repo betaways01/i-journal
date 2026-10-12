@@ -539,6 +539,11 @@ export interface LibraryPort {
   read(userKey: string, ref: string): Promise<{ path: string; text: string; url?: string } | null>;
   syncDay(userKey: string, day: JournalDay, markdown: string): Promise<SyncResult>;
   syncNote(userKey: string, note: Note): Promise<SyncResult>;
+  /**
+   * Lists what is in the remote library: notebooks (no options), a notebook's sections, a section's
+   * pages, or pages changed in the last N days. `paths` are page paths the reply may cite.
+   */
+  browse?(userKey: string, opts: { notebook?: string; section?: string; recentDays?: number; limit?: number }): Promise<{ text: string; paths: string[] }>;
   /** Where journal days are copied. */
   journalTarget?(userKey: string): { notebook: string; section: string };
   /** Moves future journal copies to this notebook/section (created when missing). */

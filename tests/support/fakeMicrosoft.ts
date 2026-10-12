@@ -15,6 +15,7 @@ export interface FakePage {
   appended: string[];
   images: Array<{ dataId: string; bytes: number }>;
   createdAt: number;
+  modifiedAt?: number;
 }
 
 export interface FakeMicrosoftOptions {
@@ -28,6 +29,10 @@ export interface FakeMicrosoftOptions {
   displayName?: string;
   /** Graph answers OneNote with the SharePoint-license error. */
   noLicense?: boolean;
+  /** Like a big real account: listing all pages at once fails (Graph 20266) above this many sections. */
+  maxSectionsForAllPages?: number;
+  /** The /me/onenote/sections listing fails, so sections must be found notebook by notebook. */
+  sectionsListFails?: boolean;
 }
 
 interface Grant {
@@ -131,10 +136,22 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
     return {
       id: p.id,
       title: p.title,
-      lastModifiedDateTime: new Date(p.createdAt).toISOString(),
+      createdDateTime: new Date(p.createdAt).toISOString(),
+      lastModifiedDateTime: new Date(p.modifiedAt ?? p.createdAt).toISOString(),
       links: { oneNoteClientUrl: { href: `onenote:https://onenote.example/${p.id}` }, oneNoteWebUrl: { href: `https://onenote.example/${p.id}` } },
       parentSection: { displayName: s.displayName },
       parentNotebook: { displayName: nb.displayName },
+    };
+  }
+
+  function sectionJson(x: { id: string; notebookId: string; displayName: string }) {
+    const times = pages.filter((pg) => pg.sectionId === x.id).map((pg) => pg.modifiedAt ?? pg.createdAt);
+    return {
+      id: x.id,
+      displayName: x.displayName,
+      lastModifiedDateTime: new Date(times.length ? Math.max(...times) : 0).toISOString(),
+      parentNotebook: { displayName: notebooks.find((n) => n.id === x.notebookId)?.displayName },
+      parentSectionGroup: null,
     };
   }
 
@@ -158,7 +175,8 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
       return json(201, nb);
     }
     let m = /^\/me\/onenote\/notebooks\/([^/]+)\/sections$/.exec(p);
-    if (m && method === 'GET') return json(200, { value: sections.filter((s) => s.notebookId === decodeURIComponent(m![1])) });
+    if (m && method === 'GET') return json(200, { value: sections.filter((s) => s.notebookId === decodeURIComponent(m![1])).map(sectionJson) });
+    if (/^\/me\/onenote\/notebooks\/[^/]+\/sectionGroups$/.test(p)) return json(200, { value: [] });
     if (m && method === 'POST') {
       const s = { id: next('sec'), notebookId: decodeURIComponent(m[1]), displayName: (JSON.parse(String(init.body)) as { displayName: string }).displayName };
       sections.push(s);
@@ -177,7 +195,16 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
       return json(201, pageJson(page));
     }
     if (m && method === 'GET') return json(200, { value: pages.filter((x) => x.sectionId === decodeURIComponent(m![1])).map(pageJson).reverse() });
-    if (p === '/me/onenote/pages' && method === 'GET') return json(200, { value: [...pages].reverse().map(pageJson) });
+    if (p === '/me/onenote/pages' && method === 'GET') {
+      if (opts.maxSectionsForAllPages !== undefined && sections.length > opts.maxSectionsForAllPages) {
+        return json(400, { error: { code: '20266', message: 'The number of maximum sections is exceeded for this request.' } });
+      }
+      return json(200, { value: [...pages].reverse().map(pageJson) });
+    }
+    if (p === '/me/onenote/sections' && method === 'GET') {
+      if (opts.sectionsListFails) return json(400, { error: { code: '20266', message: 'The number of maximum sections is exceeded for this request.' } });
+      return json(200, { value: sections.map(sectionJson) });
+    }
     m = /^\/me\/onenote\/pages\/([^/]+)(\/content)?$/.exec(p);
     if (m) {
       const page = pages.find((x) => x.id === decodeURIComponent(m![1]));
@@ -194,6 +221,7 @@ export function createFakeMicrosoft(opts: FakeMicrosoftOptions = {}) {
           page.images.push({ dataId, bytes: bin.length });
           return new Response(null, { status: 204 });
         }
+        page.modifiedAt = now;
         const commands = JSON.parse(String(init.body)) as Array<{ target: string; action: string; content: string }>;
         for (const c of commands) {
           if (c.target === '#ij-text' && c.action === 'replace') {
