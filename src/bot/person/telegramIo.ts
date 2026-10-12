@@ -144,6 +144,7 @@ const TOOL_STATUS: Record<string, string> = {
   journal_open: '📓 Opening today’s page…',
   journal_close: '📓 Closing the page…',
   notes_search: '🗂 Looking through your notes…',
+  notes_browse: '🗂 Listing your notebooks…',
   notes_read: '🗂 Reading your note…',
   notes_save: '🗂 Saving the note…',
   remind_set: '⏰ Setting a reminder…',

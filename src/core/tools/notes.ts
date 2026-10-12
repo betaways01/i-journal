@@ -13,7 +13,7 @@ export const notesSearch: ToolDef = {
   spec: {
     name: 'notes_search',
     description:
-      'Search their notes library (saved notes, studies, lectures, notebooks). Use when they ask about something they wrote down or want to study from their own notes. Cite a hit by its Notebook / Section / Title path.',
+      'Search their notes library (saved notes, studies, lectures, notebooks) by words in page titles, section and notebook names. Use when they ask about something they wrote down or want to study from their own notes. To list what is there, or what changed today/this week, use notes_browse instead. Cite a hit by its Notebook / Section / Title path.',
     parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
   },
   async run(args, ctx) {
@@ -37,6 +37,45 @@ export const notesSearch: ToolDef = {
     const tail = remoteErr ? `\n(OneNote search failed: ${remoteErr.slice(0, 160)}. Only local notes were searched.)` : '';
     if (!hits.length) return ok(`No matching notes for "${query}".${tail}`);
     return ok(hits.map(line).join('\n') + '\nUse notes_read with a ref for the full text.' + tail);
+  },
+};
+
+export const notesBrowse: ToolDef = {
+  spec: {
+    name: 'notes_browse',
+    description:
+      "List what is in their OneNote: with no arguments, every notebook (with section and page counts); with notebook, that notebook's sections; with notebook and section, its pages; with recent_days, pages changed in the last N days (e.g. 1 for today). Use for 'what's in my OneNote', 'list all my notes', 'what did I write today/this week'. Pages come with refs for notes_read.",
+    parameters: {
+      type: 'object',
+      properties: {
+        notebook: { type: 'string' },
+        section: { type: 'string', description: 'With notebook: list that section\'s pages.' },
+        recent_days: { type: 'number', description: 'List pages changed in the last N days instead.' },
+        limit: { type: 'number', description: 'How many rows at most (default 40).' },
+      },
+    },
+  },
+  async run(args, ctx) {
+    const lib = ctx.ports.library;
+    if (!lib?.browse) return fail('OneNote is not set up on this server.');
+    if (!lib.isConnected(ctx.userKey)) return fail('OneNote is not connected; connect it first (connect_service).');
+    const notebook = argStr(args, 'notebook', 128);
+    const section = argStr(args, 'section', 128);
+    const days = Number(args.recent_days);
+    const limit = Number(args.limit);
+    try {
+      const r = await lib.browse(ctx.userKey, {
+        notebook: notebook || undefined,
+        section: notebook && section ? section : undefined,
+        recentDays: Number.isFinite(days) && days > 0 ? Math.min(days, 366) : undefined,
+        limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+      });
+      remember(ctx, r.paths);
+      ctx.effects.push({ type: 'searched', where: 'notes', hits: r.paths.length });
+      return ok(r.text + (r.paths.length ? '\nUse notes_read with a ref for the full text.' : ''));
+    } catch (err) {
+      return fail(`Could not list OneNote: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}`);
+    }
   },
 };
 
@@ -143,4 +182,4 @@ export const journalLocation: ToolDef = {
   },
 };
 
-export const noteTools = [notesSearch, notesRead, notesSave, journalLocation];
+export const noteTools = [notesSearch, notesBrowse, notesRead, notesSave, journalLocation];

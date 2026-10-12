@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import { ConnectOffer, Logger } from '../../core/types';
 import { createOneNoteClient } from '../../onenote/client';
+import { createOneNoteIndex } from '../../onenote/index';
 import { createMicrosoftAuth, MicrosoftApp, MicrosoftAuth } from '../../onenote/oauth';
 import { sqliteTokenStore } from '../../onenote/tokens';
 import { createOneNoteLibrary, OneNoteLibrary } from './onenote';
@@ -75,10 +76,12 @@ export function createOneNoteService(deps: OneNoteServiceDeps): OneNoteService {
   const auth = createMicrosoftAuth({ app, db, tokens: sqliteTokenStore(db), stateSecret: deps.stateSecret, log, fetchImpl: deps.fetchImpl, now: deps.now });
   const client = createOneNoteClient({ token: (id, o) => auth.accessToken(id, o), log, fetchImpl: deps.fetchImpl, now: deps.now, sleep: deps.sleep });
   const pollMs = deps.devicePollMs ?? 5000;
+  const index = createOneNoteIndex({ db, client, log, now: deps.now });
   const library = createOneNoteLibrary({
     userIdFor,
     auth,
     client,
+    index,
     saveTarget: (id, nb, sec) => auth.saveTarget(id, nb, sec),
     log,
     onReconnectNeeded: (userKey, reason) => {
@@ -170,9 +173,16 @@ export function createOneNoteService(deps: OneNoteServiceDeps): OneNoteService {
         return { ok: true, title: 'OneNote connected', message: 'You can go back to Telegram now.' };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        log.warn('onenote: link sign-in failed', { error: message });
         const userId = auth.userIdFromState(state);
         const userKey = userId != null ? userKeyFor(userId) : null;
+        // Browsers and in-app viewers sometimes load the callback twice; the first load already connected.
+        const meta = userId != null ? auth.status(userId) : null;
+        const justConnected = Boolean(meta?.connected && meta.meta.connectedAt && (deps.now ?? Date.now)() - Date.parse(meta.meta.connectedAt) < 10 * 60_000);
+        if (/already used/.test(message) && justConnected) {
+          log.info('onenote: repeated callback after a successful sign-in ignored', { userKey });
+          return { ok: true, title: 'OneNote connected', message: 'You can go back to Telegram now.' };
+        }
+        log.warn('onenote: link sign-in failed', { error: message });
         if (userKey) await deps.notify(userKey, `OneNote was not connected: ${message}`).catch(() => undefined);
         return { ok: false, title: 'OneNote was not connected', message };
       }
@@ -209,6 +219,9 @@ export function createOneNoteService(deps: OneNoteServiceDeps): OneNoteService {
         const s = await library.status(k).catch((err) => ({ connected: false, error: err instanceof Error ? err.message : String(err) }));
         out.push({ userKey: k, connected: s.connected, error: s.error });
         log.info('onenote: connection checked', { userKey: k, connected: s.connected, error: s.error });
+        // Keep the index of their notebooks current (re-reads only sections that changed).
+        const id = userIdFor(k);
+        if (s.connected && id != null) index.ensureFresh(id, 6 * 3_600_000);
       }
       return out;
     },
@@ -219,6 +232,15 @@ export function createOneNoteService(deps: OneNoteServiceDeps): OneNoteService {
       const target = library.journalTarget?.(userKey);
       if (s.connected) {
         lines.push(`• OneNote: connected${s.label ? ` (${s.label})` : ''}. Journal pages go to *${target?.notebook} / ${target?.section}*.`);
+        const ix = library.indexStatus(userKey);
+        if (ix) {
+          lines.push(
+            ix.building
+              ? `• Reading your notebooks: ${ix.done ?? 0} of ${ix.total ?? '?'} sections so far (${ix.pages} pages known).`
+              : `• Notebooks read: ${ix.sections} sections, ${ix.pages} pages${ix.refreshedAt ? `, updated ${ix.refreshedAt.slice(0, 16).replace('T', ' ')} UTC` : ''}.`
+          );
+          if (ix.error) lines.push(`• Reading problem: ${ix.error}`);
+        }
         if (s.error) lines.push(`• Last OneNote problem: ${s.error}`);
       } else {
         lines.push(`• OneNote: ${s.error && s.error !== 'not connected' ? s.error : 'not connected'}. Say *connect OneNote* to sign in.`);

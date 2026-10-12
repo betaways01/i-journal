@@ -36,6 +36,15 @@ export interface PageRef {
   notebook?: string;
 }
 
+export interface SectionRef {
+  id: string;
+  name: string;
+  notebook: string;
+  /** Section group path inside the notebook, if any. */
+  group?: string;
+  modified: string | null;
+}
+
 export interface PhotoFile {
   key: string;
   localPath: string;
@@ -123,14 +132,16 @@ export interface OneNoteClient {
   page(userId: number, pageId: string): Promise<PageRef | null>;
   /** A page in this section with exactly this title (case-insensitive), newest first. */
   findInSection(userId: number, sectionId: string, title: string): Promise<{ id: string; url: string | null } | null>;
-  search(userId: number, query: string, limit: number): Promise<PageRef[]>;
+  /** Every section in every notebook (section groups included), with when each last changed. */
+  listSections(userId: number): Promise<SectionRef[]>;
+  /** Pages of one section, newest first. Large accounts must be read a section at a time. */
+  sectionPages(userId: number, sectionId: string): Promise<Array<{ id: string; title: string; created: string | null; modified: string | null; url: string | null }>>;
   read(userId: number, pageId: string): Promise<{ title: string; text: string; url: string | null }>;
   forget(userId: number): void;
 }
 
 const NB_MAX = 128;
 const SECTION_MAX = 50;
-const INDEX_TTL_MS = 15 * 60_000;
 const IDS_TTL_MS = 30 * 60_000;
 
 export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
@@ -138,7 +149,6 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? (() => Date.now());
   const sectionIds = new Map<string, { id: string; at: number }>();
-  const indexes = new Map<number, { at: number; pages: PageRef[] }>();
 
   async function call(userId: number, url: string, init: RequestInit = {}, timeoutMs = 25_000): Promise<Response> {
     let forceRefresh = false;
@@ -272,7 +282,6 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
           body: contentHtml(title, textXhtml),
         });
         const page = (await res.json()) as { id: string; links?: PageLinks };
-        indexes.delete(userId);
         return { id: page.id, url: pageUrl(page.links) };
       } catch (err) {
         if (err instanceof OneNoteError && err.kind === 'notfound') for (const k of sectionIds.keys()) if (k.startsWith(`${userId}\u0000`)) sectionIds.delete(k);
@@ -328,48 +337,54 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
       return hit ? { id: hit.id, url: pageUrl(hit.links) } : null;
     },
 
-    async search(userId, query, limit) {
-      let idx = indexes.get(userId);
-      if (!idx || now() - idx.at > INDEX_TTL_MS) {
-        const raw = await list<{
-          id: string;
-          title?: string;
-          links?: PageLinks;
-          lastModifiedDateTime?: string;
-          parentSection?: { displayName?: string };
-          parentNotebook?: { displayName?: string };
-        }>(
+    async listSections(userId) {
+      type Raw = { id: string; displayName?: string; lastModifiedDateTime?: string; parentNotebook?: { displayName?: string }; parentSectionGroup?: { displayName?: string } | null };
+      const toRef = (s: Raw, notebook?: string, group?: string): SectionRef => ({
+        id: s.id,
+        name: s.displayName || '(untitled section)',
+        notebook: notebook ?? s.parentNotebook?.displayName ?? '(notebook)',
+        group: group ?? s.parentSectionGroup?.displayName ?? undefined,
+        modified: s.lastModifiedDateTime || null,
+      });
+      try {
+        const all = await list<Raw>(
           userId,
-          `${GRAPH}/pages?$select=id,title,links,lastModifiedDateTime&$expand=parentSection($select=displayName),parentNotebook($select=displayName)&$orderby=lastModifiedDateTime desc&$top=100`,
-          5
+          `${GRAPH}/sections?$select=id,displayName,lastModifiedDateTime&$expand=parentNotebook($select=displayName),parentSectionGroup($select=displayName)&$top=100`,
+          100
         );
-        idx = {
-          at: now(),
-          pages: raw.map((p) => ({
-            id: p.id,
-            title: p.title || '(untitled page)',
-            url: pageUrl(p.links),
-            lastModified: p.lastModifiedDateTime || null,
-            section: p.parentSection?.displayName,
-            notebook: p.parentNotebook?.displayName,
-          })),
-        };
-        indexes.set(userId, idx);
+        return all.map((s) => toRef(s));
+      } catch (err) {
+        if (!(err instanceof OneNoteError && err.kind === 'bad_request')) throw err;
+        deps.log?.info('onenote: listing sections notebook by notebook', { userId, reason: err.message.slice(0, 120) });
       }
-      const words = query
-        .toLowerCase()
-        .split(/[^\p{L}\p{N}]+/u)
-        .filter((w) => w.length > 1);
-      if (!words.length) return idx.pages.slice(0, limit);
-      const scored = idx.pages
-        .map((p, i) => {
-          const hay = `${p.title} ${p.section || ''} ${p.notebook || ''}`.toLowerCase();
-          const hits = words.filter((w) => hay.includes(w)).length;
-          return { p, score: hits ? hits * 1000 - i : 0 };
-        })
-        .filter((x) => x.score > 0)
-        .sort((a, b) => b.score - a.score);
-      return scored.slice(0, limit).map((x) => x.p);
+      // Fallback: walk notebooks and their section groups.
+      const out: SectionRef[] = [];
+      const books = await list<{ id: string; displayName: string }>(userId, `${GRAPH}/notebooks?$select=id,displayName&$top=100`, 20);
+      const walkGroups = async (url: string, notebook: string, prefix: string, depth: number): Promise<void> => {
+        if (depth > 4) return;
+        const groups = await list<{ id: string; displayName: string }>(userId, url, 20);
+        for (const g of groups) {
+          const name = prefix ? `${prefix} / ${g.displayName}` : g.displayName;
+          const secs = await list<Raw>(userId, `${GRAPH}/sectionGroups/${encodeURIComponent(g.id)}/sections?$select=id,displayName,lastModifiedDateTime&$top=100`, 20);
+          out.push(...secs.map((s) => toRef(s, notebook, name)));
+          await walkGroups(`${GRAPH}/sectionGroups/${encodeURIComponent(g.id)}/sectionGroups?$select=id,displayName`, notebook, name, depth + 1);
+        }
+      };
+      for (const b of books) {
+        const secs = await list<Raw>(userId, `${GRAPH}/notebooks/${encodeURIComponent(b.id)}/sections?$select=id,displayName,lastModifiedDateTime&$top=100`, 20);
+        out.push(...secs.map((s) => toRef(s, b.displayName)));
+        await walkGroups(`${GRAPH}/notebooks/${encodeURIComponent(b.id)}/sectionGroups?$select=id,displayName`, b.displayName, '', 0);
+      }
+      return out;
+    },
+
+    async sectionPages(userId, sectionId) {
+      const raw = await list<{ id: string; title?: string; createdDateTime?: string; lastModifiedDateTime?: string; links?: PageLinks }>(
+        userId,
+        `${GRAPH}/sections/${encodeURIComponent(sectionId)}/pages?$select=id,title,createdDateTime,lastModifiedDateTime,links&$orderby=lastModifiedDateTime desc&$top=100`,
+        30
+      );
+      return raw.map((p) => ({ id: p.id, title: p.title || '(untitled page)', created: p.createdDateTime || null, modified: p.lastModifiedDateTime || null, url: pageUrl(p.links) }));
     },
 
     async read(userId, pageId) {
@@ -380,7 +395,6 @@ export function createOneNoteClient(deps: OneNoteClientDeps): OneNoteClient {
     },
 
     forget(userId) {
-      indexes.delete(userId);
       for (const k of sectionIds.keys()) if (k.startsWith(`${userId}\u0000`)) sectionIds.delete(k);
     },
   };
